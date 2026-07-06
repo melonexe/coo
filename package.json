@@ -1,0 +1,48 @@
+{
+  "name": "cooterm",
+  "productName": "CooTerm",
+  "version": "0.1.0",
+  "description": "Termius-style SSH + Serial terminal for Windows",
+  "main": "src/main/main.js",
+  "author": "Alexander Simon",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "icon": "node scripts/make-icon.js",
+    "dist": "electron-builder --win"
+  },
+  "devDependencies": {
+    "electron": "^34.0.0",
+    "electron-builder": "^25.1.8",
+    "png-to-ico": "^3.0.2",
+    "sharp": "^0.35.3"
+  },
+  "dependencies": {
+    "@lydell/node-pty": "^1.2.0-beta.12",
+    "@xterm/addon-fit": "^0.10.0",
+    "@xterm/addon-web-links": "^0.11.0",
+    "@xterm/xterm": "^5.5.0",
+    "serialport": "^12.0.0",
+    "ssh2": "^1.16.0"
+  },
+  "build": {
+    "appId": "com.cooterm.app",
+    "productName": "CooTerm",
+    "files": [
+      "src/**/*",
+      "build/icon.ico",
+      "package.json"
+    ],
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        "nsis",
+        "portable"
+      ]
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false
+    }
+  }
+}

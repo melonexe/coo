@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'" />
+  <title>CooTerm</title>
+  <link rel="stylesheet" href="../../node_modules/@xterm/xterm/css/xterm.css" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="app">
+    <aside id="sidebar">
+      <div class="sidebar-header">
+        <div class="logo">Coo<span>Term</span></div>
+        <button id="btn-new-host" class="btn btn-primary" title="New Host">+ New</button>
+      </div>
+
+      <div class="search-wrap">
+        <input id="search" type="text" placeholder="Search hosts…" autocomplete="off" />
+      </div>
+
+      <div class="sidebar-scroll">
+        <div class="section">
+          <div class="section-title">Local</div>
+          <div id="local-list" class="host-list"></div>
+        </div>
+
+        <div class="section">
+          <div class="section-title">SSH Hosts</div>
+          <div id="ssh-list" class="host-list"></div>
+        </div>
+
+        <div class="section">
+          <div class="section-title">Serial Connections</div>
+          <div id="serial-list" class="host-list"></div>
+        </div>
+
+        <div class="section">
+          <div class="section-title">
+            Detected Ports
+            <button id="btn-refresh-ports" class="icon-btn" title="Refresh ports">&#x21bb;</button>
+          </div>
+          <div id="ports-list" class="host-list"></div>
+        </div>
+      </div>
+    </aside>
+
+    <main id="main">
+      <div id="tabbar"></div>
+      <div id="terminals">
+        <div id="welcome">
+          <div class="welcome-inner">
+            <div class="welcome-logo">Coo<span>Term</span></div>
+            <p>SSH &amp; Serial terminal</p>
+            <p class="hint">Add a host with <b>+ New</b>, or click a detected COM port to connect at 115200&nbsp;8N1.</p>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <!-- Connection attempt popup -->
+  <div id="connect-backdrop" class="hidden">
+    <div id="connect-popup">
+      <div class="connect-head">
+        <div id="connect-spinner" class="spinner"></div>
+        <div id="connect-fail-icon" class="fail-icon hidden">✕</div>
+        <div class="connect-titles">
+          <div id="connect-title">Connecting…</div>
+          <div id="connect-status">Starting…</div>
+        </div>
+      </div>
+      <label class="check verbose-toggle">
+        <input id="connect-verbose" type="checkbox" />
+        Verbose log
+      </label>
+      <div id="connect-log" class="hidden"></div>
+      <div class="modal-actions">
+        <button type="button" id="btn-connect-retry" class="btn hidden">Retry</button>
+        <button type="button" id="btn-connect-cancel" class="btn">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Host editor modal -->
+  <div id="modal-backdrop" class="hidden">
+    <div id="modal">
+      <div class="modal-title" id="modal-title">New Host</div>
+
+      <div class="form-row">
+        <label>Type</label>
+        <div class="seg">
+          <button type="button" class="seg-btn active" data-type="ssh">SSH</button>
+          <button type="button" class="seg-btn" data-type="serial">Serial</button>
+        </div>
+      </div>
+
+      <div class="form-row">
+        <label for="f-name">Label</label>
+        <input id="f-name" type="text" placeholder="My server / My device" />
+      </div>
+
+      <!-- SSH fields -->
+      <div class="type-group" data-group="ssh">
+        <div class="form-row split">
+          <div class="grow">
+            <label for="f-host">Host</label>
+            <input id="f-host" type="text" placeholder="192.168.1.10" />
+          </div>
+          <div class="w80">
+            <label for="f-port">Port</label>
+            <input id="f-port" type="number" value="22" />
+          </div>
+        </div>
+        <div class="form-row">
+          <label for="f-username">Username</label>
+          <input id="f-username" type="text" placeholder="root" />
+        </div>
+        <div class="form-row">
+          <label>Authentication</label>
+          <div class="seg">
+            <button type="button" class="seg-btn active" data-auth="password">Password</button>
+            <button type="button" class="seg-btn" data-auth="key">Private key</button>
+          </div>
+        </div>
+        <div class="auth-group" data-group="password">
+          <div class="form-row">
+            <label for="f-password">Password</label>
+            <input id="f-password" type="password" autocomplete="off" />
+          </div>
+        </div>
+        <div class="auth-group hidden" data-group="key">
+          <div class="form-row split">
+            <div class="grow">
+              <label for="f-keypath">Key file</label>
+              <input id="f-keypath" type="text" placeholder="C:\Users\you\.ssh\id_ed25519" />
+            </div>
+            <div class="w80 btn-under-label">
+              <button type="button" id="btn-browse-key" class="btn">Browse</button>
+            </div>
+          </div>
+          <div class="form-row">
+            <label for="f-passphrase">Passphrase (optional)</label>
+            <input id="f-passphrase" type="password" autocomplete="off" />
+          </div>
+        </div>
+      </div>
+
+      <!-- Serial fields -->
+      <div class="type-group hidden" data-group="serial">
+        <div class="form-row split">
+          <div class="grow">
+            <label for="f-serial-port">Port</label>
+            <select id="f-serial-port"></select>
+          </div>
+          <div class="w120">
+            <label for="f-baud">Baud rate</label>
+            <input id="f-baud" list="baud-list" value="115200" />
+            <datalist id="baud-list">
+              <option value="9600"></option>
+              <option value="19200"></option>
+              <option value="38400"></option>
+              <option value="57600"></option>
+              <option value="115200"></option>
+              <option value="230400"></option>
+              <option value="460800"></option>
+              <option value="921600"></option>
+            </datalist>
+          </div>
+        </div>
+        <div class="form-row split">
+          <div class="grow">
+            <label for="f-databits">Data bits</label>
+            <select id="f-databits">
+              <option>8</option><option>7</option><option>6</option><option>5</option>
+            </select>
+          </div>
+          <div class="grow">
+            <label for="f-parity">Parity</label>
+            <select id="f-parity">
+              <option value="none">None</option>
+              <option value="even">Even</option>
+              <option value="odd">Odd</option>
+              <option value="mark">Mark</option>
+              <option value="space">Space</option>
+            </select>
+          </div>
+          <div class="grow">
+            <label for="f-stopbits">Stop bits</label>
+            <select id="f-stopbits">
+              <option>1</option><option>1.5</option><option>2</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-row split">
+          <div class="grow">
+            <label for="f-flow">Flow control</label>
+            <select id="f-flow">
+              <option value="none">None</option>
+              <option value="rtscts">RTS/CTS</option>
+              <option value="xonxoff">XON/XOFF</option>
+            </select>
+          </div>
+          <div class="grow">
+            <label for="f-lineending">Send on Enter</label>
+            <select id="f-lineending">
+              <option value="cr">CR (\r)</option>
+              <option value="lf">LF (\n)</option>
+              <option value="crlf">CR+LF (\r\n)</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-row">
+          <label class="check">
+            <input id="f-localecho" type="checkbox" />
+            Local echo (for devices that don't echo typed characters)
+          </label>
+        </div>
+      </div>
+
+      <div class="modal-actions">
+        <button type="button" id="btn-modal-cancel" class="btn">Cancel</button>
+        <button type="button" id="btn-modal-save" class="btn">Save</button>
+        <button type="button" id="btn-modal-connect" class="btn btn-primary">Save &amp; Connect</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="../../node_modules/@xterm/xterm/lib/xterm.js"></script>
+  <script src="../../node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
+  <script src="../../node_modules/@xterm/addon-web-links/lib/addon-web-links.js"></script>
+  <script src="renderer.js"></script>
+</body>
+</html>
