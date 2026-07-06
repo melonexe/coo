@@ -59,6 +59,92 @@
     </main>
   </div>
 
+  <!-- Network config slide-out -->
+  <button id="net-handle" title="Network config (IP / MAC)">
+    <span class="net-handle-label">NET</span>
+  </button>
+
+  <aside id="net-panel">
+    <div class="net-head">
+      <div class="net-head-title">Network Config</div>
+      <button id="net-close" class="icon-btn" title="Close">✕</button>
+    </div>
+
+    <div class="net-scroll">
+      <div class="net-warn">Applying changes needs admin (a UAC prompt will appear). Changing a MAC restarts the adapter and may drop active sessions on it.</div>
+
+      <div class="net-block">
+        <div class="net-row-head">
+          <label for="net-if">Interface</label>
+          <button id="net-refresh" class="icon-btn" title="Refresh">&#x21bb;</button>
+        </div>
+        <select id="net-if"></select>
+        <div id="net-current" class="net-current"></div>
+      </div>
+
+      <div class="net-block">
+        <div class="net-block-title">IP Address</div>
+        <div class="seg" id="net-ipmode">
+          <button type="button" class="seg-btn active" data-mode="dhcp">DHCP</button>
+          <button type="button" class="seg-btn" data-mode="static">Static</button>
+        </div>
+        <div id="net-static" class="hidden">
+          <div class="form-row split">
+            <div class="grow">
+              <label for="net-ip">IP address</label>
+              <input id="net-ip" type="text" placeholder="192.168.1.50" />
+            </div>
+            <div class="w80">
+              <label for="net-prefix">Prefix</label>
+              <input id="net-prefix" type="number" min="1" max="32" value="24" />
+            </div>
+          </div>
+          <div id="net-mask-hint" class="net-hint"></div>
+          <div class="form-row">
+            <label for="net-gw">Gateway</label>
+            <input id="net-gw" type="text" placeholder="192.168.1.1" />
+          </div>
+          <div class="form-row">
+            <label for="net-dns">DNS servers (comma separated)</label>
+            <input id="net-dns" type="text" placeholder="1.1.1.1, 8.8.8.8" />
+          </div>
+        </div>
+      </div>
+
+      <div class="net-block">
+        <div class="net-block-title">MAC Address</div>
+        <div class="seg wrap" id="net-macmode">
+          <button type="button" class="seg-btn active" data-mode="keep">Keep</button>
+          <button type="button" class="seg-btn" data-mode="custom">Custom</button>
+          <button type="button" class="seg-btn" data-mode="random">Random</button>
+          <button type="button" class="seg-btn" data-mode="restore">Restore</button>
+        </div>
+        <div id="net-mac-wrap" class="form-row hidden">
+          <label for="net-mac">MAC address</label>
+          <div class="form-row split">
+            <input id="net-mac" class="grow" type="text" placeholder="02:AB:CD:EF:12:34" />
+            <button type="button" id="net-mac-regen" class="btn w80 hidden">New</button>
+          </div>
+        </div>
+        <div id="net-mac-note" class="net-hint hidden"></div>
+      </div>
+
+      <div class="net-actions">
+        <button type="button" id="net-apply" class="btn btn-primary">Apply Changes</button>
+      </div>
+
+      <div id="net-log" class="net-log hidden"></div>
+
+      <div class="net-block">
+        <div class="net-row-head">
+          <div class="net-block-title">Presets</div>
+          <button type="button" id="net-save-preset" class="btn">Save current</button>
+        </div>
+        <div id="net-presets" class="net-presets"></div>
+      </div>
+    </div>
+  </aside>
+
   <!-- Connection attempt popup -->
   <div id="connect-backdrop" class="hidden">
     <div id="connect-popup">

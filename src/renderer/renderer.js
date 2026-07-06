@@ -651,6 +651,260 @@ window.addEventListener('resize', () => {
   }
 });
 
+/* ---------------- Network config panel ---------------- */
+
+const net = {
+  interfaces: [],
+  presets: [],
+  ipMode: 'dhcp',
+  macMode: 'keep'
+};
+
+function randomMac() {
+  const bytes = Array.from({ length: 6 }, () => Math.floor(Math.random() * 256));
+  bytes[0] = (bytes[0] & 0xfc) | 0x02; // locally-administered, unicast
+  return bytes.map(b => b.toString(16).padStart(2, '0').toUpperCase()).join(':');
+}
+
+function prefixToMaskJs(prefix) {
+  const p = parseInt(prefix, 10);
+  if (!(p >= 0 && p <= 32)) return null;
+  const o = [0, 0, 0, 0];
+  for (let i = 0; i < p; i++) o[i >> 3] |= 1 << (7 - (i % 8));
+  return o.join('.');
+}
+
+function selectedInterface() {
+  return net.interfaces.find(i => i.name === $('#net-if').value) || null;
+}
+
+function renderCurrentInterface() {
+  const el = $('#net-current');
+  const iface = selectedInterface();
+  if (!iface) { el.innerHTML = ''; return; }
+  const rows = [
+    ['Status', iface.status],
+    ['IP', iface.ip ? `${iface.ip}/${iface.prefix} ${iface.dhcp ? '(DHCP)' : '(static)'}` : '—'],
+    ['Gateway', iface.gateway || '—'],
+    ['DNS', (iface.dns && iface.dns.length) ? iface.dns.join(', ') : '—'],
+    ['MAC', iface.mac || '—'],
+    ['Permanent', iface.permanentMac || '—']
+  ];
+  el.innerHTML = rows
+    .map(([k, v]) => `<div><span class="k">${k}:</span> <span class="v">${v}</span></div>`)
+    .join('');
+}
+
+async function loadInterfaces(selectName) {
+  const sel = $('#net-if');
+  sel.innerHTML = '<option>Loading…</option>';
+  const res = await window.api.netList();
+  if (!res.ok) {
+    sel.innerHTML = '<option>Error</option>';
+    netLog([{ level: 'error', message: res.error }]);
+    return;
+  }
+  net.interfaces = res.interfaces;
+  sel.innerHTML = '';
+  for (const iface of net.interfaces) {
+    const opt = document.createElement('option');
+    opt.value = iface.name;
+    opt.textContent = `${iface.name}${iface.status ? ` (${iface.status})` : ''}`;
+    sel.appendChild(opt);
+  }
+  if (selectName && net.interfaces.some(i => i.name === selectName)) sel.value = selectName;
+  renderCurrentInterface();
+}
+
+function setNetIpMode(mode) {
+  net.ipMode = mode;
+  document.querySelectorAll('#net-ipmode .seg-btn').forEach(b =>
+    b.classList.toggle('active', b.dataset.mode === mode));
+  $('#net-static').classList.toggle('hidden', mode !== 'static');
+}
+
+function updateMaskHint() {
+  const mask = prefixToMaskJs($('#net-prefix').value);
+  $('#net-mask-hint').textContent = mask ? `Subnet mask: ${mask}` : 'Invalid prefix';
+}
+
+function setNetMacMode(mode) {
+  net.macMode = mode;
+  document.querySelectorAll('#net-macmode .seg-btn').forEach(b =>
+    b.classList.toggle('active', b.dataset.mode === mode));
+
+  const wrap = $('#net-mac-wrap');
+  const input = $('#net-mac');
+  const regen = $('#net-mac-regen');
+  const note = $('#net-mac-note');
+
+  wrap.classList.toggle('hidden', mode !== 'custom' && mode !== 'random');
+  regen.classList.toggle('hidden', mode !== 'random');
+  input.readOnly = mode === 'random';
+
+  note.classList.add('hidden');
+  if (mode === 'random') {
+    input.value = randomMac();
+  } else if (mode === 'restore') {
+    const iface = selectedInterface();
+    note.textContent = iface && iface.permanentMac
+      ? `Will restore permanent MAC: ${iface.permanentMac}`
+      : 'Will restore the adapter’s permanent MAC.';
+    note.classList.remove('hidden');
+  } else if (mode === 'custom' && !input.value) {
+    const iface = selectedInterface();
+    if (iface && iface.mac) input.value = iface.mac;
+  }
+}
+
+function netLog(lines, clear = true) {
+  const log = $('#net-log');
+  if (clear) log.innerHTML = '';
+  log.classList.remove('hidden');
+  for (const { level, message } of lines) {
+    const line = document.createElement('div');
+    line.className = 'log-line ' + (level || 'info');
+    line.textContent = message;
+    log.appendChild(line);
+  }
+  log.scrollTop = log.scrollHeight;
+}
+
+function collectNetForm() {
+  const iface = selectedInterface();
+  return {
+    ifName: iface ? iface.name : '',
+    ipMode: net.ipMode,
+    ip: $('#net-ip').value.trim(),
+    prefix: $('#net-prefix').value.trim(),
+    gateway: $('#net-gw').value.trim(),
+    dns: $('#net-dns').value.trim(),
+    macMode: net.macMode,
+    mac: $('#net-mac').value.trim()
+  };
+}
+
+async function applyNet() {
+  const cfg = collectNetForm();
+  if (!cfg.ifName) { netLog([{ level: 'error', message: 'Select an interface first.' }]); return; }
+
+  const btn = $('#net-apply');
+  btn.disabled = true;
+  btn.textContent = 'Applying… (approve UAC)';
+  netLog([{ level: 'info', message: 'Requesting elevation…' }]);
+
+  const res = await window.api.netApply(cfg);
+
+  const lines = (res.log || []).map(m => ({ level: /error|fail/i.test(m) ? 'error' : 'info', message: m }));
+  if (res.ok) lines.push({ level: 'info', message: '✓ Changes applied successfully.' });
+  else lines.push({ level: 'error', message: `✗ ${res.error || 'Failed.'}` });
+  netLog(lines);
+
+  btn.disabled = false;
+  btn.textContent = 'Apply Changes';
+  if (res.ok) setTimeout(() => loadInterfaces(cfg.ifName), 1500);
+}
+
+/* Presets */
+
+function presetSubtitle(p) {
+  const ipPart = p.ipMode === 'dhcp' ? 'DHCP' : `${p.ip || '?'}/${p.prefix || '?'}`;
+  const macPart = { keep: '', custom: ` · MAC ${p.mac}`, random: ' · MAC random', restore: ' · MAC restore' }[p.macMode] || '';
+  return `${p.ifName || 'any'} · ${ipPart}${macPart}`;
+}
+
+async function loadNetPresets() {
+  net.presets = await window.api.netLoadPresets();
+  renderNetPresets();
+}
+
+function renderNetPresets() {
+  const list = $('#net-presets');
+  list.innerHTML = '';
+  if (!net.presets.length) {
+    list.innerHTML = '<div class="empty-note">No presets saved</div>';
+    return;
+  }
+  for (const p of net.presets) {
+    const item = document.createElement('div');
+    item.className = 'preset-item';
+
+    const meta = document.createElement('div');
+    meta.className = 'preset-meta';
+    const name = document.createElement('div');
+    name.className = 'preset-name';
+    name.textContent = p.name;
+    const sub = document.createElement('div');
+    sub.className = 'preset-sub';
+    sub.textContent = presetSubtitle(p);
+    meta.append(name, sub);
+
+    const del = document.createElement('button');
+    del.className = 'preset-del';
+    del.textContent = '✕';
+    del.title = 'Delete preset';
+    del.addEventListener('click', ev => {
+      ev.stopPropagation();
+      net.presets = net.presets.filter(x => x.id !== p.id);
+      window.api.netSavePresets(net.presets);
+      renderNetPresets();
+    });
+
+    item.append(meta, del);
+    item.addEventListener('click', () => applyPresetToForm(p));
+    list.appendChild(item);
+  }
+}
+
+function applyPresetToForm(p) {
+  if (p.ifName && net.interfaces.some(i => i.name === p.ifName)) $('#net-if').value = p.ifName;
+  renderCurrentInterface();
+  setNetIpMode(p.ipMode || 'dhcp');
+  $('#net-ip').value = p.ip || '';
+  $('#net-prefix').value = p.prefix || 24;
+  $('#net-gw').value = p.gateway || '';
+  $('#net-dns').value = p.dns || '';
+  updateMaskHint();
+  setNetMacMode(p.macMode || 'keep');
+  if (p.macMode === 'custom') $('#net-mac').value = p.mac || '';
+}
+
+function saveNetPreset() {
+  const name = prompt('Preset name:');
+  if (!name) return;
+  const cfg = collectNetForm();
+  net.presets.push({ id: 'p' + Date.now(), name, ...cfg });
+  window.api.netSavePresets(net.presets);
+  renderNetPresets();
+}
+
+/* Wiring */
+
+function toggleNetPanel(open) {
+  const panel = $('#net-panel');
+  const isOpen = open === undefined ? !panel.classList.contains('open') : open;
+  panel.classList.toggle('open', isOpen);
+  $('#net-handle').classList.toggle('shifted', isOpen);
+  if (isOpen && !net.interfaces.length) loadInterfaces();
+}
+
+$('#net-handle').addEventListener('click', () => toggleNetPanel());
+$('#net-close').addEventListener('click', () => toggleNetPanel(false));
+$('#net-refresh').addEventListener('click', () => loadInterfaces($('#net-if').value));
+$('#net-if').addEventListener('change', () => { renderCurrentInterface(); if (net.macMode === 'restore') setNetMacMode('restore'); });
+$('#net-prefix').addEventListener('input', updateMaskHint);
+$('#net-mac-regen').addEventListener('click', () => { $('#net-mac').value = randomMac(); });
+$('#net-apply').addEventListener('click', applyNet);
+$('#net-save-preset').addEventListener('click', saveNetPreset);
+
+document.querySelectorAll('#net-ipmode .seg-btn').forEach(b =>
+  b.addEventListener('click', () => setNetIpMode(b.dataset.mode)));
+document.querySelectorAll('#net-macmode .seg-btn').forEach(b =>
+  b.addEventListener('click', () => setNetMacMode(b.dataset.mode)));
+
+updateMaskHint();
+loadNetPresets();
+
 loadHosts();
 renderLocalShells();
 refreshPorts();
