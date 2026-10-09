@@ -1,14 +1,25 @@
-const { app, BrowserWindow, ipcMain, dialog, safeStorage } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, safeStorage, Menu, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const { spawn } = require('child_process');
-const { SerialPort } = require('serialport');
-const { Client } = require('ssh2');
-const pty = require('@lydell/node-pty');
+
+// Startup speed: serialport, ssh2 and node-pty are the slow modules to load
+// (native bindings + crypto). Load each on first use instead of before the
+// window exists; warmUpModules() pre-loads them once the UI is on screen.
+const getSerialPort = () => require('serialport').SerialPort;
+const getSshClient = () => require('ssh2').Client;
+const getPty = () => require('@lydell/node-pty');
+const { createLogger } = require('./sessionlog');
+const { setupForwards, describeForward } = require('./forwarding');
+const { registerSftp } = require('./sftp');
+
+// Startup speed: skip building Electron's default application menu (it was
+// hidden anyway). F12 still opens DevTools - see createWindow().
+Menu.setApplicationMenu(null);
 
 let win = null;
-const sessions = new Map(); // id -> { write, resize, close }
+const sessions = new Map(); // id -> { type, write, resize, close, conn?, sftp?, logger?, stopForwards? }
 const pendingConnects = new Map(); // connectId -> abort fn
 let nextSessionId = 1;
 
@@ -31,10 +42,57 @@ function createWindow() {
   });
   win.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
   win.on('closed', () => { win = null; });
+  win.webContents.on('before-input-event', (e, input) => {
+    if (input.type === 'keyDown' && input.key === 'F12') win.webContents.toggleDevTools();
+  });
+  win.webContents.once('did-finish-load', warmUpModules);
+
+  // The window only ever shows the app itself: links go to the default browser,
+  // and nothing (a dropped file, a stray link) may navigate or open a new window
+  // that would inherit the preload API.
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    openExternal(url);
+    return { action: 'deny' };
+  });
+  win.webContents.on('will-navigate', e => e.preventDefault());
+}
+
+function openExternal(url) {
+  if (/^https?:\/\//i.test(String(url))) shell.openExternal(String(url));
+}
+
+// Load the heavy modules one at a time after the window has rendered, so the
+// first connection doesn't pay the load cost and the UI never stalls for long.
+function warmUpModules() {
+  const loaders = [getSerialPort, getSshClient, getPty];
+  const next = () => {
+    const load = loaders.shift();
+    if (!load) return;
+    try { load(); } catch {}
+    setTimeout(next, 50);
+  };
+  setTimeout(next, 300);
 }
 
 function send(channel, payload) {
   if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
+}
+
+// Terminal output: to the renderer, and to the session's log file if one is open
+function emitData(id, data) {
+  send('session:data', { id, data });
+  const s = sessions.get(id);
+  if (s && s.logger) s.logger.write(data);
+}
+
+// Forget a session and release what hangs off it. Returns false if already gone.
+function dropSession(id) {
+  const s = sessions.get(id);
+  if (!s) return false;
+  sessions.delete(id);
+  if (s.logger) { try { s.logger.close(); } catch {} }
+  if (s.stopForwards) { try { s.stopForwards(); } catch {} }
+  return true;
 }
 
 // Connection-attempt log line, routed to the popup by connectId
@@ -102,7 +160,7 @@ ipcMain.handle('hosts:save', (e, hosts) => {
 
 ipcMain.handle('ports:list', async () => {
   try {
-    return await SerialPort.list();
+    return await getSerialPort().list();
   } catch (err) {
     return [];
   }
@@ -126,7 +184,7 @@ function createSerialSession(id, cfg) {
 
     clog(cid, 'info', `Opening ${cfg.path} at ${baud} baud (${dataBits}${parity[0].toUpperCase()}${stopBits}, flow control: ${cfg.flow || 'none'})`);
 
-    const port = new SerialPort({
+    const port = new (getSerialPort())({
       path: cfg.path,
       baudRate: baud,
       dataBits,
@@ -156,13 +214,14 @@ function createSerialSession(id, cfg) {
       clog(cid, 'debug', `OS handle acquired for ${cfg.path}`);
       clog(cid, 'info', 'Port opened');
       sessions.set(id, {
+        type: 'serial',
         write: data => port.write(data),
         resize: () => {},
         close: () => { try { if (port.isOpen) port.close(); } catch {} }
       });
-      port.on('data', data => send('session:data', { id, data }));
+      port.on('data', data => emitData(id, data));
       port.on('close', () => {
-        sessions.delete(id);
+        dropSession(id);
         send('session:status', { id, status: 'closed' });
       });
       port.on('error', e2 => send('session:status', { id, status: 'error', message: e2.message }));
@@ -173,10 +232,18 @@ function createSerialSession(id, cfg) {
 
 /* ---------------- SSH ---------------- */
 
+const activeForwards = new Map(); // forwardKey -> session id that owns the listener
+
+function forwardKey(cfg, rule) {
+  return rule.type === 'remote'
+    ? `remote|${cfg.host}:${cfg.port || 22}|${rule.bindAddr || '127.0.0.1'}:${rule.srcPort}`
+    : `local|${rule.bindAddr || '127.0.0.1'}:${rule.srcPort}`;
+}
+
 function createSshSession(id, cfg) {
   const cid = cfg.connectId;
   return new Promise((resolve, reject) => {
-    const conn = new Client();
+    const conn = new (getSshClient())();
     let ready = false;
     let settled = false;
     const finish = err => {
@@ -216,18 +283,47 @@ function createSshSession(id, cfg) {
           }
           ready = true;
           clog(cid, 'info', 'Shell ready');
-          sessions.set(id, {
+          const session = {
+            type: 'ssh',
+            conn,
             write: data => stream.write(data),
             resize: (cols, rows) => { try { stream.setWindow(rows, cols, 0, 0); } catch {} },
             close: () => { try { conn.end(); } catch {} }
-          });
-          stream.on('data', data => send('session:data', { id, data }));
-          stream.stderr.on('data', data => send('session:data', { id, data }));
+          };
+          sessions.set(id, session);
+          stream.on('data', data => emitData(id, data));
+          stream.stderr.on('data', data => emitData(id, data));
           stream.on('close', () => {
-            sessions.delete(id);
+            const was = dropSession(id);
             try { conn.end(); } catch {}
-            send('session:status', { id, status: 'closed' });
+            if (was) send('session:status', { id, status: 'closed' });
           });
+          if (Array.isArray(cfg.forwards) && cfg.forwards.length) {
+            const notify = (level, message) => {
+              clog(cid, level, message);
+              send('session:status', { id, status: 'notice', level, message });
+            };
+            // A second session to the same host (a split, a duplicate tab) can't bind the
+            // same ports again; the first session's forwards keep serving them.
+            const mine = [];
+            const shared = [];
+            for (const rule of cfg.forwards) {
+              const key = forwardKey(cfg, rule);
+              if (activeForwards.has(key)) {
+                shared.push(describeForward(rule));
+              } else {
+                activeForwards.set(key, id);
+                mine.push(key);
+                rule.__key = key;
+              }
+            }
+            if (shared.length) notify('info', `Port forwarding already provided by another session: ${shared.join('; ')}`);
+            const stop = setupForwards(conn, cfg.forwards.filter(r => r.__key), notify);
+            session.stopForwards = () => {
+              for (const key of mine) activeForwards.delete(key);
+              stop();
+            };
+          }
           finish();
         }
       );
@@ -243,10 +339,7 @@ function createSshSession(id, cfg) {
     });
 
     conn.on('close', () => {
-      if (sessions.has(id)) {
-        sessions.delete(id);
-        send('session:status', { id, status: 'closed' });
-      }
+      if (dropSession(id)) send('session:status', { id, status: 'closed' });
     });
 
     // Servers that use keyboard-interactive auth (common on network gear)
@@ -297,7 +390,7 @@ function createLocalSession(id, cfg) {
     clog(cid, 'info', `Starting ${shell}...`);
     let proc;
     try {
-      proc = pty.spawn(shell, cfg.args || [], {
+      proc = getPty().spawn(shell, cfg.args || [], {
         name: 'xterm-256color',
         cols: cfg.cols || 80,
         rows: cfg.rows || 24,
@@ -309,13 +402,14 @@ function createLocalSession(id, cfg) {
       return reject(err);
     }
     sessions.set(id, {
+      type: 'local',
       write: data => proc.write(data),
       resize: (cols, rows) => { try { if (cols > 0 && rows > 0) proc.resize(cols, rows); } catch {} },
       close: () => { try { proc.kill(); } catch {} }
     });
-    proc.onData(data => send('session:data', { id, data: Buffer.from(data, 'utf8') }));
+    proc.onData(data => emitData(id, Buffer.from(data, 'utf8')));
     proc.onExit(({ exitCode }) => {
-      sessions.delete(id);
+      dropSession(id);
       send('session:status', { id, status: 'closed', message: `exit code ${exitCode}` });
     });
     resolve();
@@ -354,10 +448,52 @@ ipcMain.on('session:cancelConnect', (e, connectId) => {
 
 ipcMain.handle('session:close', (e, id) => {
   const s = sessions.get(id);
+  dropSession(id);
   if (s) s.close();
-  sessions.delete(id);
   return true;
 });
+
+/* ---------------- Session logging ---------------- */
+
+ipcMain.handle('log:start', async (e, { id, file, append, timestamps, title }) => {
+  if (!sessions.has(id)) return { ok: false, error: 'Session is not connected' };
+  let target = file;
+  if (!target) {
+    const d = new Date();
+    const p = n => String(n).padStart(2, '0');
+    const when = `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+    const base = String(title || 'session').replace(/[<>:"/\\|?*\s]+/g, '_').slice(0, 60) || 'session';
+    const res = await dialog.showSaveDialog(win, {
+      title: 'Save session log',
+      defaultPath: path.join(app.getPath('documents'), `${base}-${when}.log`),
+      filters: [{ name: 'Log files', extensions: ['log', 'txt'] }]
+    });
+    if (res.canceled || !res.filePath) return { ok: false, cancelled: true };
+    target = res.filePath;
+  }
+  const s = sessions.get(id); // may have closed while the dialog was open
+  if (!s) return { ok: false, error: 'Session closed before logging could start' };
+  try {
+    if (s.logger) s.logger.close();
+    s.logger = createLogger(target, { append: !!append, timestamps: !!timestamps, title });
+    return { ok: true, file: target };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle('log:stop', (e, id) => {
+  const s = sessions.get(id);
+  if (s && s.logger) {
+    s.logger.close();
+    s.logger = null;
+  }
+  return true;
+});
+
+/* ---------------- SFTP ---------------- */
+
+registerSftp({ ipcMain, dialog, app, sessions, send, getWindow: () => win });
 
 /* ---------------- Network config (IP / MAC changer) ---------------- */
 
@@ -595,7 +731,62 @@ ipcMain.handle('net:savePresets', (e, presets) => {
   return true;
 });
 
+/* ---------------- Snippets (userData/snippets.json) ---------------- */
+
+function snippetsFile() {
+  return path.join(app.getPath('userData'), 'snippets.json');
+}
+
+ipcMain.handle('snippets:load', () => {
+  try {
+    if (!fs.existsSync(snippetsFile())) return [];
+    const data = JSON.parse(fs.readFileSync(snippetsFile(), 'utf8'));
+    return Array.isArray(data) ? data : [];
+  } catch {
+    return [];
+  }
+});
+
+ipcMain.handle('snippets:save', (e, snippets) => {
+  const file = snippetsFile();
+  const tmp = file + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(snippets, null, 2), 'utf8');
+  fs.renameSync(tmp, file);
+  return true;
+});
+
+/* ---------------- Import / export files ---------------- */
+
+ipcMain.handle('file:saveText', async (e, { title, defaultName, filters, content }) => {
+  try {
+    const res = await dialog.showSaveDialog(win, {
+      title,
+      defaultPath: path.join(app.getPath('documents'), String(defaultName || 'export').replace(/[<>:"/\\|?*]/g, '_')),
+      filters
+    });
+    if (res.canceled || !res.filePath) return { ok: false, cancelled: true };
+    fs.writeFileSync(res.filePath, content, 'utf8');
+    return { ok: true, file: res.filePath };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle('file:openText', async (e, { title, filters }) => {
+  try {
+    const res = await dialog.showOpenDialog(win, { title, filters, properties: ['openFile'] });
+    if (res.canceled || !res.filePaths.length) return { ok: false, cancelled: true };
+    const file = res.filePaths[0];
+    if (fs.statSync(file).size > 5 * 1024 * 1024) return { ok: false, error: 'That file is too large to be a CooTerm export.' };
+    return { ok: true, file, name: path.basename(file), content: fs.readFileSync(file, 'utf8') };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
 /* ---------------- Misc ---------------- */
+
+ipcMain.on('shell:openExternal', (e, url) => openExternal(url));
 
 ipcMain.handle('dialog:openFile', async () => {
   const res = await dialog.showOpenDialog(win, {
@@ -608,7 +799,9 @@ ipcMain.handle('dialog:openFile', async () => {
 app.whenReady().then(createWindow);
 
 app.on('window-all-closed', () => {
-  for (const s of sessions.values()) s.close();
-  sessions.clear();
+  for (const [id, s] of [...sessions]) {
+    dropSession(id);
+    s.close();
+  }
   app.quit();
 });

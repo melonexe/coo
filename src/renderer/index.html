@@ -12,7 +12,10 @@
     <aside id="sidebar">
       <div class="sidebar-header">
         <div class="logo">Coo<span>Term</span></div>
-        <button id="btn-new-host" class="btn btn-primary" title="New Host">+ New</button>
+        <div class="sidebar-actions">
+          <button type="button" id="btn-share" class="icon-btn" data-icon="more" title="Import / export connections and snippets"></button>
+          <button id="btn-new-host" class="btn btn-primary" title="New Host">+ New</button>
+        </div>
       </div>
 
       <div class="search-wrap">
@@ -46,23 +49,113 @@
     </aside>
 
     <main id="main">
-      <div id="tabbar"></div>
-      <div id="terminals">
-        <div id="welcome">
-          <div class="welcome-inner">
-            <div class="welcome-logo">Coo<span>Term</span></div>
-            <p>SSH &amp; Serial terminal</p>
-            <p class="hint">Add a host with <b>+ New</b>, or click a detected COM port to connect at 115200&nbsp;8N1.</p>
+      <div id="topbar">
+        <div id="tabbar"></div>
+        <div id="toolbar">
+          <button type="button" id="tb-split-right" class="tb-btn" data-icon="splitRight" title="Split right (Ctrl+Shift+D)"></button>
+          <button type="button" id="tb-split-down" class="tb-btn" data-icon="splitDown" title="Split down (Ctrl+Shift+E)"></button>
+          <span class="tb-sep"></span>
+          <button type="button" id="tb-find" class="tb-btn" data-icon="search" title="Find in all terminals (Ctrl+Shift+F)"></button>
+          <button type="button" id="tb-sftp" class="tb-btn" data-icon="folder" title="Files (SFTP)"></button>
+          <button type="button" id="tb-snippets" class="tb-btn" data-icon="snippet" title="Snippets"></button>
+          <button type="button" id="tb-log" class="tb-btn" data-icon="record" title="Log this session to a file"></button>
+          <span class="tb-sep"></span>
+          <button type="button" id="tb-net" class="tb-btn" data-icon="net" title="Network config (IP / MAC)"></button>
+          <button type="button" id="tb-settings" class="tb-btn" data-icon="settings" title="Terminal settings"></button>
+        </div>
+      </div>
+
+      <div id="workarea">
+        <div id="terminals">
+          <div id="welcome">
+            <div class="welcome-inner">
+              <div class="welcome-logo">Coo<span>Term</span></div>
+              <p>SSH &amp; Serial terminal</p>
+              <p class="hint">Add a host with <b>+ New</b>, or click a detected COM port to connect at 115200&nbsp;8N1.</p>
+            </div>
+          </div>
+
+          <!-- File preview (Space in the Files panel) -->
+          <div id="preview" class="hidden" tabindex="-1">
+            <div class="preview-head">
+              <div class="preview-titles">
+                <div id="preview-name"></div>
+                <div id="preview-meta"></div>
+              </div>
+              <button type="button" id="preview-find-btn" class="icon-btn" data-icon="search" title="Find in this file (Ctrl+F)"></button>
+              <label class="check preview-wrap"><input id="preview-wrap" type="checkbox" /> Wrap</label>
+              <button type="button" id="preview-download" class="btn btn-small">Download…</button>
+              <button type="button" id="preview-close" class="icon-btn" title="Close (Space or Esc)">✕</button>
+            </div>
+            <div id="preview-find" class="preview-find hidden">
+              <input id="pvfind-input" type="text" placeholder="Find in this file…" spellcheck="false" autocomplete="off" />
+              <span id="pvfind-count"></span>
+              <button type="button" id="pvfind-case" class="find-btn" title="Match case">Aa</button>
+              <button type="button" id="pvfind-prev" class="find-btn" title="Previous match (Shift+Enter)">&#x2191;</button>
+              <button type="button" id="pvfind-next" class="find-btn" title="Next match (Enter)">&#x2193;</button>
+              <button type="button" id="pvfind-close" class="find-btn" title="Close find (Esc)">✕</button>
+            </div>
+            <div id="preview-body" class="preview-body" tabindex="0"></div>
+            <div class="preview-foot">
+              <span id="preview-status"></span>
+              <span class="preview-hint">Space or Esc to close · ↑ ↓ for the next file · Ctrl+F to find</span>
+            </div>
+          </div>
+
+          <!-- Find across terminals -->
+          <div id="findbar" class="hidden">
+            <div class="find-row">
+              <input id="find-input" type="text" placeholder="Find in terminals…" spellcheck="false" autocomplete="off" />
+              <span id="find-count"></span>
+              <button type="button" id="find-case" class="find-btn" title="Match case">Aa</button>
+              <button type="button" id="find-scope" class="find-btn" title="Search every open terminal (off: only the focused one)">All</button>
+              <button type="button" id="find-prev" class="find-btn" title="Previous match (Shift+Enter)">&#x2191;</button>
+              <button type="button" id="find-next" class="find-btn" title="Next match (Enter)">&#x2193;</button>
+              <button type="button" id="find-close" class="find-btn" title="Close (Esc)">✕</button>
+            </div>
+            <div id="find-chips"></div>
           </div>
         </div>
+
+        <!-- Docked side panel: Files (SFTP) / Snippets -->
+        <aside id="sidepanel" class="hidden">
+          <div class="side-head">
+            <div class="side-tabs">
+              <button type="button" class="side-tab" data-side="sftp">Files</button>
+              <button type="button" class="side-tab" data-side="snippets">Snippets</button>
+            </div>
+            <button type="button" id="side-close" class="icon-btn" title="Close panel">✕</button>
+          </div>
+
+          <div id="side-sftp" class="side-body hidden">
+            <div class="sftp-bar">
+              <button type="button" id="sftp-up" class="icon-btn" data-icon="up" title="Parent folder"></button>
+              <input id="sftp-path" type="text" spellcheck="false" autocomplete="off" title="Remote folder (Enter to go)" />
+              <button type="button" id="sftp-refresh" class="icon-btn" data-icon="refresh" title="Refresh"></button>
+              <button type="button" id="sftp-mkdir" class="icon-btn" data-icon="newFolder" title="New folder"></button>
+              <button type="button" id="sftp-upload" class="icon-btn" data-icon="upload" title="Upload files"></button>
+            </div>
+            <div id="sftp-mode" class="sftp-mode hidden"></div>
+            <div id="sftp-list" class="sftp-list" tabindex="0"></div>
+            <div class="sftp-foot">
+              <div id="sftp-status" class="sftp-status"></div>
+              <button type="button" id="sftp-cancel" class="btn btn-small hidden">Stop</button>
+            </div>
+          </div>
+
+          <div id="side-snippets" class="side-body hidden">
+            <div class="snip-bar">
+              <input id="snip-search" type="text" placeholder="Filter snippets…" spellcheck="false" autocomplete="off" />
+              <button type="button" id="snip-more" class="icon-btn" data-icon="more" title="Import / export snippets"></button>
+              <button type="button" id="snip-new" class="btn btn-primary">+ New</button>
+            </div>
+            <div id="snip-list" class="snip-list"></div>
+            <div class="side-note">Click a snippet to send it to the focused terminal. Drop a .coosnip or CSV file here to import it.</div>
+          </div>
+        </aside>
       </div>
     </main>
   </div>
-
-  <!-- Network config slide-out -->
-  <button id="net-handle" title="Network config (IP / MAC)">
-    <span class="net-handle-label">NET</span>
-  </button>
 
   <aside id="net-panel">
     <div class="net-head">
@@ -146,7 +239,7 @@
   </aside>
 
   <!-- Connection attempt popup -->
-  <div id="connect-backdrop" class="hidden">
+  <div id="connect-backdrop" class="backdrop hidden">
     <div id="connect-popup">
       <div class="connect-head">
         <div id="connect-spinner" class="spinner"></div>
@@ -169,7 +262,7 @@
   </div>
 
   <!-- Host editor modal -->
-  <div id="modal-backdrop" class="hidden">
+  <div id="modal-backdrop" class="backdrop hidden">
     <div id="modal">
       <div class="modal-title" id="modal-title">New Host</div>
 
@@ -229,6 +322,11 @@
             <label for="f-passphrase">Passphrase (optional)</label>
             <input id="f-passphrase" type="password" autocomplete="off" />
           </div>
+        </div>
+        <div class="form-row">
+          <label>Port forwarding</label>
+          <div id="f-forwards" class="fwd-list"></div>
+          <button type="button" id="btn-add-forward" class="btn btn-small">+ Add rule</button>
         </div>
       </div>
 
@@ -312,9 +410,103 @@
     </div>
   </div>
 
+  <!-- Terminal settings -->
+  <div id="settings-backdrop" class="backdrop hidden">
+    <div id="settings-modal" class="dialog">
+      <div class="modal-title">Terminal settings</div>
+
+      <div class="form-row split">
+        <div class="grow">
+          <label for="set-theme">Theme</label>
+          <select id="set-theme"></select>
+        </div>
+        <div class="w120">
+          <label for="set-cursor">Cursor</label>
+          <select id="set-cursor">
+            <option value="block">Block</option>
+            <option value="bar">Bar</option>
+            <option value="underline">Underline</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="form-row split">
+        <div class="grow">
+          <label for="set-font">Font</label>
+          <input id="set-font" type="text" list="font-list" spellcheck="false" />
+          <datalist id="font-list">
+            <option value="Cascadia Mono"></option>
+            <option value="Cascadia Code"></option>
+            <option value="Consolas"></option>
+            <option value="Lucida Console"></option>
+            <option value="Courier New"></option>
+            <option value="JetBrains Mono"></option>
+            <option value="Fira Code"></option>
+          </datalist>
+        </div>
+        <div class="w80">
+          <label for="set-size">Size</label>
+          <input id="set-size" type="number" min="8" max="32" />
+        </div>
+        <div class="w120">
+          <label for="set-scrollback">Scrollback lines</label>
+          <input id="set-scrollback" type="number" min="500" max="200000" step="500" />
+        </div>
+      </div>
+
+      <div id="set-preview" class="set-preview"></div>
+
+      <div class="form-row">
+        <label class="check"><input id="set-blink" type="checkbox" /> Blinking cursor</label>
+      </div>
+      <div class="form-row">
+        <label class="check"><input id="set-rightclick" type="checkbox" /> Right-click copies the selection, or pastes when nothing is selected</label>
+      </div>
+      <div class="form-row">
+        <label class="check"><input id="set-logts" type="checkbox" /> Add a timestamp to each line in session logs</label>
+      </div>
+
+      <div class="modal-actions">
+        <button type="button" id="set-reset" class="btn">Reset to defaults</button>
+        <button type="button" id="set-done" class="btn btn-primary">Done</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Snippet editor -->
+  <div id="snip-backdrop" class="backdrop hidden">
+    <div id="snip-modal" class="dialog">
+      <div class="modal-title" id="snip-title">New snippet</div>
+      <div class="form-row">
+        <label for="snip-name">Name</label>
+        <input id="snip-name" type="text" placeholder="Show interfaces" />
+      </div>
+      <div class="form-row">
+        <label for="snip-cmd">Command (one per line)</label>
+        <textarea id="snip-cmd" rows="6" spellcheck="false" placeholder="show ip interface brief"></textarea>
+      </div>
+      <div class="form-row">
+        <label class="check"><input id="snip-run" type="checkbox" /> Press Enter after sending (run it straight away)</label>
+      </div>
+      <div class="modal-actions">
+        <button type="button" id="snip-cancel" class="btn">Cancel</button>
+        <button type="button" id="snip-save" class="btn btn-primary">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toasts"></div>
+
   <script src="../../node_modules/@xterm/xterm/lib/xterm.js"></script>
   <script src="../../node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
   <script src="../../node_modules/@xterm/addon-web-links/lib/addon-web-links.js"></script>
+  <script src="ui.js"></script>
+  <script src="settings.js"></script>
   <script src="renderer.js"></script>
+  <script src="find.js"></script>
+  <script src="snippets.js"></script>
+  <script src="sftp.js"></script>
+  <script src="preview.js"></script>
+  <script src="share.js"></script>
 </body>
 </html>
