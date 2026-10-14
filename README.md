@@ -15,6 +15,10 @@ A Termius-style SSH + **Serial** terminal for Windows, built with Electron. Seri
 - **Connection popup** — Termius-style spinner while connecting, with cancel/retry and a persistent **verbose log** toggle that shows the full SSH handshake/auth trail when a connection fails
 - **Saved hosts** with search, edit, and delete (Termius-style sidebar)
 - **Tabs and split panes** — run sessions side by side in one tab (split right / split down, drag the divider to resize); double-click a tab to rename it, drag tabs to reorder, middle-click to close
+  - Shift+right-click a terminal (or the ⋯ that appears on a split pane) for the pane menu: split, zoom one pane to fill the tab, make panes equal size, move a pane to its own tab or window, close it or every other pane
+  - Hovering a split pane shows a ✕ to close just that pane; the pane next to it takes over its space and the focus
+- **Multiple windows** — drag a tab out of the window to give it a window of its own, or drop it on another CooTerm window to move it there (like a browser). Sessions keep running and keep their scrollback while they move. Ctrl+Shift+N opens a new empty window
+- **Collapsible sidebar** — hide the hosts sidebar (button at the left of the tab bar, or Ctrl+Shift+B) for more terminal space
 - **Reconnect in place** — a closed or failed session stays on screen with its history; press Enter to reconnect
 - **Find in all terminals** — browser-style find bar that searches the scrollback of every open terminal, steps between matches across tabs and panes, and shows a per-terminal match count
 - **Files (SFTP)** — browse, upload (button or drag from Explorer), download files or whole folders (right-click a folder), rename, delete and create folders on the focused SSH session
@@ -22,6 +26,7 @@ A Termius-style SSH + **Serial** terminal for Windows, built with Electron. Seri
   - Hosts without SFTP (common on embedded devices) fall back automatically to shell commands for browsing and SCP for transfers, or plain `cat` where SCP is missing too
 - **Port forwarding** — local, remote and dynamic (SOCKS5) rules saved per SSH host
 - **Snippets** — saved commands sent to the focused terminal with one click; share one (or all) as a `.coosnip` file
+  - A line `sleep 5` in a snippet waits 5 seconds before the next lines are sent (`sleep 500ms` for milliseconds); it is not sent itself. Click a running snippet to stop it. To send a real `sleep` command, write it another way, e.g. `\sleep 5` or `sleep 5;`
 - **Import / export** — connections (SSH and serial) and snippets as one CSV file, to hand your setup to someone else. Passwords and passphrases are never exported
 - **Session logging** — record a session to a plain-text file (escape codes stripped, optional per-line timestamps); the log carries on across reconnects
 - **Terminal settings** — themes, font, size, cursor, scrollback
@@ -35,6 +40,10 @@ A Termius-style SSH + **Serial** terminal for Windows, built with Electron. Seri
 | Ctrl+Shift+F | Find in all terminals (Enter / Shift+Enter or F3 / Shift+F3 to step, Esc to close) |
 | Ctrl+Shift+D / Ctrl+Shift+E | Split right / split down |
 | Ctrl+Shift+W | Close the focused pane (the tab closes with its last pane) |
+| Ctrl+Shift+M | Zoom the focused pane to fill the tab / restore the layout |
+| Shift+right-click | Pane menu (split, zoom, move, close…) |
+| Ctrl+Shift+B | Hide / show the hosts sidebar |
+| Ctrl+Shift+N | New window |
 | Ctrl+Tab / Ctrl+Shift+Tab | Next / previous tab |
 | Ctrl+Shift+C / Ctrl+Shift+V | Copy / paste |
 | Ctrl+= / Ctrl+- / Ctrl+0 | Bigger / smaller / default font size |

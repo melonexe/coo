@@ -587,7 +587,7 @@ function registerSftp({ ipcMain, dialog, app, sessions, send, getWindow }) {
   const handle = (channel, fn) =>
     ipcMain.handle(channel, async (e, arg) => {
       try {
-        return { ok: true, ...(await fn(arg || {})) };
+        return { ok: true, ...(await fn(arg || {}, e)) };
       } catch (err) {
         return { ok: false, error: err && err.message ? err.message : String(err) };
       }
@@ -614,25 +614,25 @@ function registerSftp({ ipcMain, dialog, app, sessions, send, getWindow }) {
   });
 
   // Progress events are throttled so a fast transfer doesn't flood the renderer
-  const progress = xferId => {
+  const progress = (xferId, e) => {
     let last = 0;
     return (transferred, chunk, total) => {
       const now = Date.now();
       if (now - last < 100 && transferred < total) return;
       last = now;
-      send('sftp:progress', { xferId, transferred, total });
+      send(e, 'sftp:progress', { xferId, transferred, total });
     };
   };
 
-  handle('sftp:download', async ({ id, dir, name, size, xferId }) => {
+  handle('sftp:download', async ({ id, dir, name, size, xferId }, e) => {
     const be = await backendFor(id);
-    const res = await dialog.showSaveDialog(getWindow(), {
+    const res = await dialog.showSaveDialog(getWindow(e), {
       title: `Download ${name}`,
       defaultPath: path.join(app.getPath('downloads'), name.replace(/[<>:"/\\|?*]/g, '_'))
     });
     if (res.canceled || !res.filePath) return { cancelled: true };
-    send('sftp:progress', { xferId, name, transferred: 0, total: 0, started: true });
-    const via = await be.download(path.posix.join(dir, name), res.filePath, size || 0, progress(xferId));
+    send(e, 'sftp:progress', { xferId, name, transferred: 0, total: 0, started: true });
+    const via = await be.download(path.posix.join(dir, name), res.filePath, size || 0, progress(xferId, e));
     return { file: res.filePath, via };
   });
 
@@ -675,7 +675,7 @@ function registerSftp({ ipcMain, dialog, app, sessions, send, getWindow }) {
 
   // Normally just the first 256 KB. With `full`, the whole file (up to 100 MB), which the
   // preview asks for once the user scrolls past the end of the first part.
-  handle('sftp:preview', async ({ id, dir, name, full, xferId }) => {
+  handle('sftp:preview', async ({ id, dir, name, full, xferId }, e) => {
     const be = await backendFor(id);
     const remote = path.posix.join(dir, name);
     let buf;
@@ -690,7 +690,7 @@ function registerSftp({ ipcMain, dialog, app, sessions, send, getWindow }) {
           const now = Date.now();
           if (now - last < 100 && got < size) return;
           last = now;
-          send('sftp:progress', { xferId, transferred: got, total: size });
+          send(e, 'sftp:progress', { xferId, transferred: got, total: size });
         }, () => cancelled.has(xferId));
       } finally {
         cancelled.delete(xferId);
@@ -715,9 +715,9 @@ function registerSftp({ ipcMain, dialog, app, sessions, send, getWindow }) {
     return /^(con|prn|aux|nul|com\d|lpt\d)(\..*)?$/i.test(safe) ? '_' + safe : safe;
   };
 
-  handle('sftp:downloadDir', async ({ id, dir, name, xferId }) => {
+  handle('sftp:downloadDir', async ({ id, dir, name, xferId }, e) => {
     const be = await backendFor(id);
-    const res = await dialog.showOpenDialog(getWindow(), {
+    const res = await dialog.showOpenDialog(getWindow(e), {
       title: `Download the folder "${name}" into…`,
       defaultPath: app.getPath('downloads'),
       buttonLabel: 'Download here',
@@ -733,7 +733,7 @@ function registerSftp({ ipcMain, dialog, app, sessions, send, getWindow }) {
       const now = Date.now();
       if (!force && now - lastSent < 100) return;
       lastSent = now;
-      send('sftp:progress', { xferId, folder: true, files: stats.files, bytes: stats.bytes + extraBytes, current });
+      send(e, 'sftp:progress', { xferId, folder: true, files: stats.files, bytes: stats.bytes + extraBytes, current });
     };
 
     async function walk(remoteDir, localDir, depth) {
@@ -770,7 +770,7 @@ function registerSftp({ ipcMain, dialog, app, sessions, send, getWindow }) {
       }
     }
 
-    send('sftp:progress', { xferId, folder: true, files: 0, bytes: 0, current: '' });
+    send(e, 'sftp:progress', { xferId, folder: true, files: 0, bytes: 0, current: '' });
     let wasCancelled = false;
     try {
       await walk(remoteRoot, dest, 0);
@@ -790,11 +790,11 @@ function registerSftp({ ipcMain, dialog, app, sessions, send, getWindow }) {
     };
   });
 
-  handle('sftp:upload', async ({ id, dir, files, xferId }) => {
+  handle('sftp:upload', async ({ id, dir, files, xferId }, e) => {
     const be = await backendFor(id);
     let list = files;
     if (!list || !list.length) {
-      const res = await dialog.showOpenDialog(getWindow(), {
+      const res = await dialog.showOpenDialog(getWindow(e), {
         title: `Upload to ${dir}`,
         properties: ['openFile', 'multiSelections']
       });
@@ -809,8 +809,8 @@ function registerSftp({ ipcMain, dialog, app, sessions, send, getWindow }) {
       let stat;
       try { stat = fs.statSync(file); } catch { skipped.push(name); continue; }
       if (!stat.isFile()) { skipped.push(name); continue; } // folders aren't supported
-      send('sftp:progress', { xferId, name, transferred: 0, total: stat.size, started: true });
-      via = await be.upload(file, path.posix.join(dir, name), stat.size, progress(xferId));
+      send(e, 'sftp:progress', { xferId, name, transferred: 0, total: stat.size, started: true });
+      via = await be.upload(file, path.posix.join(dir, name), stat.size, progress(xferId, e));
       uploaded.push(name);
     }
     return { uploaded, skipped, via };

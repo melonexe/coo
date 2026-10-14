@@ -50,6 +50,9 @@
 
     <main id="main">
       <div id="topbar">
+        <div id="topbar-left">
+          <button type="button" id="tb-sidebar" class="tb-btn" data-icon="sidebar" title="Hide the hosts sidebar (Ctrl+Shift+B)"></button>
+        </div>
         <div id="tabbar"></div>
         <div id="toolbar">
           <button type="button" id="tb-split-right" class="tb-btn" data-icon="splitRight" title="Split right (Ctrl+Shift+D)"></button>
@@ -483,7 +486,8 @@
       </div>
       <div class="form-row">
         <label for="snip-cmd">Command (one per line)</label>
-        <textarea id="snip-cmd" rows="6" spellcheck="false" placeholder="show ip interface brief"></textarea>
+        <textarea id="snip-cmd" rows="6" spellcheck="false" placeholder="enable&#10;sleep 2&#10;show ip interface brief"></textarea>
+        <div class="field-hint">A line <code>sleep 5</code> waits 5 seconds before sending the next lines (<code>sleep 500ms</code> for milliseconds). It isn't sent to the terminal.</div>
       </div>
       <div class="form-row">
         <label class="check"><input id="snip-run" type="checkbox" /> Press Enter after sending (run it straight away)</label>
@@ -500,6 +504,7 @@
   <script src="../../node_modules/@xterm/xterm/lib/xterm.js"></script>
   <script src="../../node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
   <script src="../../node_modules/@xterm/addon-web-links/lib/addon-web-links.js"></script>
+  <script src="../../node_modules/@xterm/addon-serialize/lib/addon-serialize.js"></script>
   <script src="ui.js"></script>
   <script src="settings.js"></script>
   <script src="renderer.js"></script>

@@ -19,6 +19,7 @@ const ICON_PATHS = {
   record: '<circle cx="8" cy="8" r="5.2"/><circle class="fill" cx="8" cy="8" r="2.4"/>',
   net: '<circle cx="8" cy="8" r="5.8"/><path d="M2.2 8h11.6M8 2.2c2 1.6 2 10 0 11.6M8 2.2c-2 1.6-2 10 0 11.6"/>',
   settings: '<path d="M2 5h6M12 5h2M2 11h2M8 11h6"/><circle cx="10" cy="5" r="1.8"/><circle cx="6" cy="11" r="1.8"/>',
+  sidebar: '<rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="M6 3v10"/>',
   more: '<circle class="dot" cx="3.5" cy="8" r="1.1"/><circle class="dot" cx="8" cy="8" r="1.1"/><circle class="dot" cx="12.5" cy="8" r="1.1"/>',
   share: '<path d="M8 10V2.5M5.2 5 8 2.2 10.8 5M3.5 8.5v4a1 1 0 0 0 1 1h7a1 1 0 0 0 1-1v-4"/>',
   up: '<path d="M8 13V3M4 7l4-4 4 4"/>',
@@ -55,7 +56,7 @@ function closeMenu() {
   }
 }
 
-// items: { label, action, disabled, danger } | { header } | 'sep'
+// items: { label, action, disabled, danger, hint } | { header } | 'sep'
 function showMenu(x, y, items) {
   closeMenu();
   const menu = el('div', 'menu');
@@ -63,6 +64,7 @@ function showMenu(x, y, items) {
     if (item === 'sep') { menu.appendChild(el('div', 'menu-sep')); continue; }
     if (item.header) { menu.appendChild(el('div', 'menu-header', item.header)); continue; }
     const row = el('button', 'menu-item' + (item.danger ? ' danger' : ''), item.label);
+    if (item.hint) row.appendChild(el('span', 'menu-hint', item.hint));
     row.type = 'button';
     row.disabled = !!item.disabled;
     row.addEventListener('click', () => { closeMenu(); item.action(); });

@@ -1,4 +1,4 @@
-/* global Terminal, FitAddon, WebLinksAddon */
+/* global Terminal, FitAddon, WebLinksAddon, SerializeAddon */
 /* Core: saved hosts, tabs and split panes, connecting/reconnecting, the host editor.
    Loaded after ui.js and settings.js; find.js, snippets.js and sftp.js build on it. */
 
@@ -218,7 +218,8 @@ function updateTabUi(tab) {
   tab.dotEl.className = 'tab-dot ' + (pane ? pane.status : 'closed');
   tab.tabEl.classList.toggle('logging', tab.panes.some(p => p.log));
   tab.tabEl.title = tab.panes.map(p => `${paneTitle(p)} — ${p.status}${p.log ? ` — logging to ${p.log.file}` : ''}`).join('\n');
-  tab.root.classList.toggle('multi', tab.panes.length > 1);
+  tab.root.classList.toggle('multi', tab.panes.length > 1 && !tab.zoomed);
+  tab.tabEl.classList.toggle('zoomed', !!tab.zoomed);
   for (const p of tab.panes) p.holder.classList.toggle('focused', p === pane);
 }
 
@@ -301,7 +302,7 @@ function createTab() {
   tabEl.append(dotEl, titleEl, closeBtn);
   $('#tabbar').appendChild(tabEl);
 
-  const tab = { id, customTitle: '', tabEl, dotEl, titleEl, root, panes: [], activePaneId: null };
+  const tab = { id, customTitle: '', tabEl, dotEl, titleEl, root, panes: [], activePaneId: null, zoomed: null };
 
   tabEl.addEventListener('click', () => { if (state.activeTabId !== id) activateTab(id); });
   tabEl.addEventListener('auxclick', ev => { if (ev.button === 1) closeTab(tab); });
@@ -325,21 +326,49 @@ function createPane(tab, cfg) {
   term.loadAddon(fit);
   // Links open in the default browser (never inside the app window)
   term.loadAddon(new WebLinksAddon.WebLinksAddon((ev, uri) => window.api.openExternal(uri)));
+  // Scrollback (with colours) travels with the pane when its tab moves to another window
+  const serializer = new SerializeAddon.SerializeAddon();
+  term.loadAddon(serializer);
 
   const pane = {
-    id: state.nextPaneId++, tab, cfg, term, fit, holder, termEl,
+    id: state.nextPaneId++, tab, cfg, term, fit, serializer, holder, termEl,
     sessionId: null, status: 'connecting', connecting: false, disposed: false,
     log: null, sftpDir: null, fitQueued: false
   };
 
+  // Pane controls, shown on hover when the tab is split
+  const tools = el('div', 'pane-tools');
+  const menuBtn = el('button', 'pane-tool');
+  menuBtn.type = 'button';
+  menuBtn.innerHTML = iconSvg('more');
+  menuBtn.title = 'Pane menu (Shift+right-click)';
+  const closeBtn = el('button', 'pane-tool danger', '✕');
+  closeBtn.type = 'button';
+  closeBtn.title = 'Close this pane (Ctrl+Shift+W)';
+  tools.append(menuBtn, closeBtn);
+  holder.appendChild(tools);
+  menuBtn.addEventListener('click', ev => {
+    ev.stopPropagation();
+    const r = menuBtn.getBoundingClientRect();
+    openPaneMenu(pane, r.right - 200, r.bottom + 4);
+  });
+  closeBtn.addEventListener('click', ev => { ev.stopPropagation(); closePane(pane); });
+
   term.onData(data => sendInput(pane, data));
   term.onResize(({ cols, rows }) => { if (pane.sessionId) window.api.resize(pane.sessionId, cols, rows); });
 
-  holder.addEventListener('mousedown', () => { if (tab.activePaneId !== pane.id) focusPane(pane, { keyboard: false }); }, true);
+  holder.addEventListener('mousedown', () => { if (pane.tab.activePaneId !== pane.id) focusPane(pane, { keyboard: false }); }, true);
   holder.addEventListener('contextmenu', ev => {
-    // Leave right-click alone when a full-screen app is tracking the mouse, or if turned off
-    if (!settings.rightClickPaste || (term.modes.mouseTrackingMode !== 'none' && !ev.shiftKey)) return;
+    // Shift+right-click: the pane menu (split, close, zoom, move…), always
+    if (ev.shiftKey) {
+      ev.preventDefault();
+      openPaneMenu(pane, ev.clientX, ev.clientY);
+      return;
+    }
+    // A full-screen app tracking the mouse gets plain right-clicks
+    if (term.modes.mouseTrackingMode !== 'none') return;
     ev.preventDefault();
+    if (!settings.rightClickPaste) { openPaneMenu(pane, ev.clientX, ev.clientY); return; }
     if (term.hasSelection()) { copySelection(pane); dropSelection(term); }
     else pasteInto(pane);
   });
@@ -374,6 +403,7 @@ function pasteInto(pane) {
 function splitPane(pane, dir, cfg) {
   if (!pane || pane.disposed) return;
   const tab = pane.tab;
+  clearZoom(tab);
   const split = el('div', 'split ' + (dir === 'down' ? 'col' : 'row'));
   split.style.flex = pane.holder.style.flex || '1 1 0px';
   pane.holder.replaceWith(split);
@@ -421,10 +451,34 @@ function wireDivider(divider) {
   });
 }
 
+// Take a pane's holder out of the layout. Its split collapses: the other side takes the
+// split's place and size. Returns that other side (a pane holder or a split), or null.
+function detachHolder(pane) {
+  const parent = pane.holder.parentElement;
+  pane.holder.remove();
+  if (!parent || !parent.classList.contains('split')) return null;
+  const survivor = [...parent.children].find(c => !c.classList.contains('divider'));
+  if (!survivor) return null;
+  survivor.style.flex = parent.style.flex || '1 1 0px';
+  parent.replaceWith(survivor);
+  return survivor;
+}
+
+// After a pane leaves, focus moves to its neighbour (the side that grew), not to whichever
+// pane happens to be last
+function paneAfterRemoval(tab, survivor) {
+  if (survivor) {
+    const near = tab.panes.find(p => survivor === p.holder || survivor.contains(p.holder));
+    if (near) return near;
+  }
+  return tab.panes[tab.panes.length - 1] || null;
+}
+
 function closePane(pane) {
   if (pane.disposed) return;
   pane.disposed = true;
   const tab = pane.tab;
+  clearZoom(tab);
 
   if (pane.sessionId) {
     bySession.delete(pane.sessionId);
@@ -433,16 +487,8 @@ function closePane(pane) {
   }
   pane.resizeObserver.disconnect();
 
-  const parent = pane.holder.parentElement;
-  pane.holder.remove();
+  const survivor = detachHolder(pane);
   pane.term.dispose();
-  if (parent && parent.classList.contains('split')) {
-    const survivor = [...parent.children].find(c => !c.classList.contains('divider'));
-    if (survivor) {
-      survivor.style.flex = parent.style.flex || '1 1 0px';
-      parent.replaceWith(survivor);
-    }
-  }
 
   tab.panes = tab.panes.filter(p => p !== pane);
   emit('coo:panestate');
@@ -452,7 +498,7 @@ function closePane(pane) {
     return;
   }
   if (tab.activePaneId === pane.id) {
-    tab.activePaneId = tab.panes[tab.panes.length - 1].id;
+    tab.activePaneId = paneAfterRemoval(tab, survivor).id;
     if (tab.id === state.activeTabId) emit('coo:activepane');
   }
   updateTabUi(tab);
@@ -461,6 +507,62 @@ function closePane(pane) {
     const next = tabActivePane(tab);
     if (next) next.term.focus();
   }
+}
+
+function closeOtherPanes(pane) {
+  for (const p of [...pane.tab.panes]) if (p !== pane) closePane(p);
+}
+
+/* Zoom: one pane fills the tab for a while; the rest of the layout is only hidden */
+
+function toggleZoom(pane) {
+  const tab = pane.tab;
+  const wasZoomed = tab.zoomed === pane;
+  clearZoom(tab);
+  if (wasZoomed || tab.panes.length < 2) return;
+  tab.zoomed = pane;
+  tab.root.classList.add('zoomed');
+  pane.holder.classList.add('zoomed');
+  for (let n = pane.holder.parentElement; n && n !== tab.root; n = n.parentElement) n.classList.add('zoom-path');
+  updateTabUi(tab);
+  focusPane(pane);
+}
+
+function clearZoom(tab) {
+  if (!tab.zoomed) return;
+  tab.zoomed = null;
+  tab.root.classList.remove('zoomed');
+  tab.root.querySelectorAll('.zoomed, .zoom-path').forEach(n => n.classList.remove('zoomed', 'zoom-path'));
+  updateTabUi(tab);
+}
+
+// Every split back to equal shares
+function equalizePanes(tab) {
+  clearZoom(tab);
+  tab.root.querySelectorAll('.split > .split, .split > .pane').forEach(n => { n.style.flex = '1 1 0px'; });
+}
+
+// Lift a pane out of its split into a tab of its own; the session carries on untouched
+function movePaneToNewTab(pane) {
+  const from = pane.tab;
+  if (pane.disposed || from.panes.length < 2) return null;
+  clearZoom(from);
+  const survivor = detachHolder(pane);
+  from.panes = from.panes.filter(p => p !== pane);
+  if (from.activePaneId === pane.id) from.activePaneId = paneAfterRemoval(from, survivor).id;
+  updateTabUi(from);
+
+  const tab = createTab();
+  pane.tab = tab;
+  tab.panes.push(pane);
+  tab.activePaneId = pane.id;
+  pane.holder.style.flex = '1 1 0px';
+  pane.holder.classList.remove('focused');
+  tab.root.appendChild(pane.holder);
+  activateTab(tab.id);
+  updateTabUi(tab);
+  emit('coo:panestate');
+  return tab;
 }
 
 function removeTab(tab) {
@@ -535,9 +637,13 @@ function renameTab(tab) {
   title.addEventListener('blur', onBlur);
 }
 
-/* Tab reorder (drag and drop) */
+/* Tab drag and drop: reorder within the window, drop on another CooTerm window to move
+   the tab there, or drop outside every window to give it a window of its own. */
 
+const TAB_MIME = 'application/x-cooterm-tab';
 let draggedTab = null;
+
+const liveSessionIds = tab => tab.panes.map(p => p.sessionId).filter(Boolean);
 
 function wireTabDrag(tab) {
   const tabEl = tab.tabEl;
@@ -545,12 +651,15 @@ function wireTabDrag(tab) {
     draggedTab = tab;
     ev.dataTransfer.effectAllowed = 'move';
     ev.dataTransfer.setData('text/plain', tabTitle(tab));
+    ev.dataTransfer.setData(TAB_MIME, String(tab.id));
     tabEl.classList.add('dragging');
+    window.api.tabDragStart({ token: tab.id, sessionIds: liveSessionIds(tab) });
   });
   tabEl.addEventListener('dragend', () => {
     draggedTab = null;
     tabEl.classList.remove('dragging');
     clearDropMarks();
+    window.api.tabDragEnd(); // the main process checks where it ended
   });
   tabEl.addEventListener('dragover', ev => {
     if (!draggedTab || draggedTab === tab) return;
@@ -576,7 +685,162 @@ function wireTabDrag(tab) {
 
 function clearDropMarks() {
   document.querySelectorAll('.tab.drop-before, .tab.drop-after').forEach(n => n.classList.remove('drop-before', 'drop-after'));
+  document.body.classList.remove('tab-drop-target');
 }
+
+// A tab dragged in from another window: drop anywhere in this one. Over the tab bar
+// it lands where the marker shows; elsewhere it goes on the end.
+const isForeignTabDrag = ev => !draggedTab && ev.dataTransfer && [...ev.dataTransfer.types].includes(TAB_MIME);
+
+function foreignDropIndex(ev) {
+  if (!$('#topbar').contains(ev.target)) return state.tabs.length;
+  const i = state.tabs.findIndex(t => {
+    const r = t.tabEl.getBoundingClientRect();
+    return ev.clientX < r.left + r.width / 2;
+  });
+  return i < 0 ? state.tabs.length : i;
+}
+
+document.addEventListener('dragover', ev => {
+  if (!isForeignTabDrag(ev)) return;
+  ev.preventDefault();
+  ev.dataTransfer.dropEffect = 'move';
+  const index = foreignDropIndex(ev);
+  clearDropMarks();
+  document.body.classList.add('tab-drop-target');
+  if (!state.tabs.length) return;
+  if (index < state.tabs.length) state.tabs[index].tabEl.classList.add('drop-before');
+  else state.tabs[state.tabs.length - 1].tabEl.classList.add('drop-after');
+});
+document.addEventListener('dragleave', ev => {
+  if (isForeignTabDrag(ev) && !ev.relatedTarget) clearDropMarks(); // left the window
+});
+document.addEventListener('drop', ev => {
+  if (!isForeignTabDrag(ev)) return;
+  ev.preventDefault();
+  const index = foreignDropIndex(ev);
+  clearDropMarks();
+  window.api.tabDropHere(index);
+});
+
+function moveTabToNewWindow(tab) {
+  if (tab.panes.some(p => p.connecting)) { toast('Wait for the connection to finish before moving this tab.', 'error'); return; }
+  window.api.tabToNewWindow({ token: tab.id, sessionIds: liveSessionIds(tab) });
+}
+
+/* Handing a tab to another window. The sessions stay open in the main process; the tab
+   travels as its layout, each pane's settings and session id, and its scrollback. */
+
+function snapshotLayout(tab, node) {
+  if (node.classList.contains('split')) {
+    return {
+      split: node.classList.contains('col') ? 'col' : 'row',
+      flex: node.style.flex,
+      children: [...node.children].filter(c => !c.classList.contains('divider')).map(c => snapshotLayout(tab, c))
+    };
+  }
+  const pane = tab.panes.find(p => p.holder === node);
+  const live = !!pane.sessionId && pane.status === 'connected';
+  return {
+    flex: node.style.flex,
+    active: pane.id === tab.activePaneId,
+    pane: {
+      cfg: pane.cfg,
+      sessionId: live ? pane.sessionId : null,
+      log: pane.log,
+      sftpDir: pane.sftpDir,
+      screen: pane.serializer.serialize({ scrollback: settings.scrollback })
+    }
+  };
+}
+
+// Take a tab down without closing its sessions (they now belong to another window)
+function detachTab(tab) {
+  for (const pane of tab.panes) {
+    pane.disposed = true;
+    if (pane.sessionId) {
+      bySession.delete(pane.sessionId);
+      settledSessions.add(pane.sessionId); // anything still in flight for it is dropped here
+      pane.sessionId = null;
+    }
+    pane.resizeObserver.disconnect();
+    pane.term.dispose();
+  }
+  tab.panes = [];
+  emit('coo:panestate');
+  removeTab(tab);
+}
+
+window.api.onTabRelease(({ requestId, token }) => {
+  const tab = state.tabs.find(t => t.id === token);
+  if (!tab || tab.panes.some(p => p.connecting)) {
+    if (tab) toast('Wait for the connection to finish before moving this tab.', 'error');
+    window.api.tabReleased(requestId, null);
+    return;
+  }
+  const payload = {
+    customTitle: tab.customTitle,
+    layout: snapshotLayout(tab, tab.root.firstElementChild)
+  };
+  detachTab(tab);
+  window.api.tabReleased(requestId, payload);
+  // Like a browser: a window whose last tab was dragged away goes too
+  if (!state.tabs.length) window.close();
+});
+
+window.api.onTabAdopt(({ payload, index }) => {
+  const tab = createTab();
+  tab.customTitle = payload.customTitle || '';
+  const restore = [];
+
+  const build = node => {
+    if (node.split) {
+      const split = el('div', 'split ' + node.split);
+      split.style.flex = node.flex || '1 1 0px';
+      node.children.forEach((child, i) => {
+        if (i) {
+          const divider = el('div', 'divider');
+          split.appendChild(divider);
+          wireDivider(divider);
+        }
+        split.appendChild(build(child));
+      });
+      return split;
+    }
+    const pane = createPane(tab, node.pane.cfg);
+    pane.holder.style.flex = node.flex || '1 1 0px';
+    if (node.active) tab.activePaneId = pane.id;
+    restore.push([pane, node.pane]);
+    return pane.holder;
+  };
+  tab.root.appendChild(build(payload.layout));
+  if (!tab.activePaneId && tab.panes.length) tab.activePaneId = tab.panes[0].id;
+
+  for (const [pane, snap] of restore) {
+    pane.term.open(pane.termEl);
+    if (snap.screen) pane.term.write(snap.screen);
+    pane.log = snap.log || null;
+    pane.sftpDir = snap.sftpDir || null;
+    if (snap.sessionId) {
+      pane.sessionId = snap.sessionId;
+      bySession.set(snap.sessionId, pane);
+      settledSessions.add(snap.sessionId);
+      pane.status = 'connected';
+    } else {
+      pane.status = 'closed';
+    }
+  }
+
+  // Put it where it was dropped
+  if (index != null && index < state.tabs.length - 1) {
+    state.tabs.pop();
+    state.tabs.splice(index, 0, tab);
+    state.tabs[index + 1].tabEl.before(tab.tabEl);
+  }
+  activateTab(tab.id);
+  updateTabUi(tab);
+  emit('coo:panestate');
+});
 
 /* Menus */
 
@@ -591,8 +855,43 @@ function openTabMenu(tab, x, y) {
     'sep',
     { label: pane && pane.log ? 'Stop logging' : 'Log to file…', disabled: !pane, action: () => { activateTab(tab.id); toggleLog(tabActivePane(tab)); } },
     'sep',
+    { label: 'Move to new window', action: () => moveTabToNewWindow(tab) },
+    { label: 'New window', hint: 'Ctrl+Shift+N', action: () => window.api.newWindow() },
+    'sep',
     { label: 'Close', action: () => closeTab(tab) },
     { label: 'Close other tabs', disabled: state.tabs.length < 2, action: () => { for (const t of [...state.tabs]) if (t !== tab) closeTab(t); } }
+  ]);
+}
+
+// Shift+right-click on a terminal (or the ⋯ button on a split pane)
+function openPaneMenu(pane, x, y) {
+  if (pane.disposed) return;
+  const tab = pane.tab;
+  if (tab.id !== state.activeTabId) activateTab(tab.id);
+  focusPane(pane);
+  const multi = tab.panes.length > 1;
+  const dead = pane.status === 'closed' && !pane.connecting;
+  showMenu(x, y, [
+    { label: 'Copy', hint: 'Ctrl+Shift+C', disabled: !pane.term.hasSelection(), action: () => { copySelection(pane); dropSelection(pane.term); } },
+    { label: 'Paste', hint: 'Ctrl+Shift+V', action: () => pasteInto(pane) },
+    'sep',
+    { label: 'Split right…', hint: 'Ctrl+Shift+D', action: () => openSplitMenu('right', x, y) },
+    { label: 'Split down…', hint: 'Ctrl+Shift+E', action: () => openSplitMenu('down', x, y) },
+    { label: tab.zoomed === pane ? 'Restore layout' : 'Zoom this pane', hint: 'Ctrl+Shift+M', disabled: !multi, action: () => toggleZoom(pane) },
+    { label: 'Make panes equal size', disabled: !multi, action: () => equalizePanes(tab) },
+    'sep',
+    { label: 'Move pane to new tab', disabled: !multi, action: () => movePaneToNewTab(pane) },
+    { label: multi ? 'Move pane to new window' : 'Move to new window', action: () => {
+      const t = multi ? movePaneToNewTab(pane) : tab;
+      if (t) moveTabToNewWindow(t);
+    } },
+    'sep',
+    dead
+      ? { label: 'Reconnect', hint: 'Enter', action: () => reconnect(pane) }
+      : { label: pane.log ? 'Stop logging' : 'Log to file…', disabled: !pane.sessionId, action: () => toggleLog(pane) },
+    'sep',
+    { label: multi ? 'Close pane' : 'Close tab', hint: 'Ctrl+Shift+W', danger: true, action: () => closePane(pane) },
+    { label: 'Close other panes', disabled: !multi, action: () => closeOtherPanes(pane) }
   ]);
 }
 
@@ -1089,6 +1388,17 @@ function setSide(name) {
 
 const toggleSide = name => setSide(sideOpen === name ? null : name);
 
+/* ---------------- Left sidebar (hosts) collapse ---------------- */
+
+function setSidebarCollapsed(collapsed) {
+  $('#app').classList.toggle('sidebar-collapsed', collapsed);
+  $('#tb-sidebar').classList.toggle('active', !collapsed);
+  $('#tb-sidebar').title = (collapsed ? 'Show' : 'Hide') + ' the hosts sidebar (Ctrl+Shift+B)';
+  try { localStorage.setItem('sidebarCollapsed', collapsed ? '1' : '0'); } catch {}
+}
+
+const toggleSidebar = () => setSidebarCollapsed(!$('#app').classList.contains('sidebar-collapsed'));
+
 /* ---------------- Wiring ---------------- */
 
 paintIcons();
@@ -1133,6 +1443,18 @@ $('#tb-sftp').addEventListener('click', () => toggleSide('sftp'));
 $('#tb-snippets').addEventListener('click', () => toggleSide('snippets'));
 $('#tb-log').addEventListener('click', () => toggleLog(activePane()));
 $('#tb-settings').addEventListener('click', openSettings);
+$('#tb-sidebar').addEventListener('click', toggleSidebar);
+let startCollapsed = false;
+try { startCollapsed = localStorage.getItem('sidebarCollapsed') === '1'; } catch {}
+setSidebarCollapsed(startCollapsed);
+
+// Hosts or settings changed in another window
+window.api.onHostsChanged(loadHosts);
+window.addEventListener('storage', ev => {
+  if (ev.key !== 'settings') return;
+  Object.assign(settings, loadSettings());
+  applySettingsToPanes();
+});
 $('#side-close').addEventListener('click', () => setSide(null));
 document.querySelectorAll('.side-tab').forEach(b => b.addEventListener('click', () => setSide(b.dataset.side)));
 
@@ -1208,6 +1530,9 @@ document.addEventListener('keydown', ev => {
       case 'KeyW': if (pane) { stop(); closePane(pane); } return;
       case 'KeyD': stop(); splitActive('right'); return;
       case 'KeyE': stop(); splitActive('down'); return;
+      case 'KeyM': if (pane) { stop(); toggleZoom(pane); } return;
+      case 'KeyB': stop(); toggleSidebar(); return;
+      case 'KeyN': stop(); window.api.newWindow(); return;
       case 'Tab': stop(); stepTab(-1); return;
     }
   }

@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, safeStorage, Menu, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, safeStorage, Menu, shell, screen } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -18,15 +18,21 @@ const { registerSftp } = require('./sftp');
 // hidden anyway). F12 still opens DevTools - see createWindow().
 Menu.setApplicationMenu(null);
 
-let win = null;
-const sessions = new Map(); // id -> { type, write, resize, close, conn?, sftp?, logger?, stopForwards? }
+// id -> { type, owner, write, resize, close, conn?, sftp?, logger?, stopForwards?, transit? }
+// owner is the webContents of the window showing the session; it changes when a tab moves.
+const sessions = new Map();
 const pendingConnects = new Map(); // connectId -> abort fn
+const connectOwners = new Map();   // connectId -> webContents that asked for the connection
 let nextSessionId = 1;
+let modulesWarmed = false;
 
-function createWindow() {
-  win = new BrowserWindow({
+// Every window is the same app page; tabs (and the sessions behind them) can move between them.
+// Returns a promise for the window once its page has loaded.
+function createWindow({ bounds } = {}) {
+  const win = new BrowserWindow({
     width: 1280,
     height: 800,
+    ...bounds,
     minWidth: 900,
     minHeight: 560,
     backgroundColor: '#14161b',
@@ -40,22 +46,35 @@ function createWindow() {
       spellcheck: false
     }
   });
+  const wc = win.webContents;
   win.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
-  win.on('closed', () => { win = null; });
-  win.webContents.on('before-input-event', (e, input) => {
-    if (input.type === 'keyDown' && input.key === 'F12') win.webContents.toggleDevTools();
+  // A window takes its sessions with it, except those already handed to another window
+  win.on('closed', () => {
+    for (const [id, s] of [...sessions]) {
+      if (s.owner === wc) { dropSession(id); s.close(); }
+    }
   });
-  win.webContents.once('did-finish-load', warmUpModules);
+  wc.on('before-input-event', (e, input) => {
+    if (input.type === 'keyDown' && input.key === 'F12') wc.toggleDevTools();
+  });
+  if (!modulesWarmed) {
+    modulesWarmed = true;
+    wc.once('did-finish-load', warmUpModules);
+  }
 
   // The window only ever shows the app itself: links go to the default browser,
   // and nothing (a dropped file, a stray link) may navigate or open a new window
   // that would inherit the preload API.
-  win.webContents.setWindowOpenHandler(({ url }) => {
+  wc.setWindowOpenHandler(({ url }) => {
     openExternal(url);
     return { action: 'deny' };
   });
-  win.webContents.on('will-navigate', e => e.preventDefault());
+  wc.on('will-navigate', e => e.preventDefault());
+
+  return new Promise(resolve => wc.once('did-finish-load', () => resolve(win)));
 }
+
+const windowOf = e => BrowserWindow.fromWebContents(e.sender);
 
 function openExternal(url) {
   if (/^https?:\/\//i.test(String(url))) shell.openExternal(String(url));
@@ -74,30 +93,45 @@ function warmUpModules() {
   setTimeout(next, 300);
 }
 
-function send(channel, payload) {
-  if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
+function sendTo(wc, channel, payload) {
+  if (wc && !wc.isDestroyed()) wc.send(channel, payload);
+}
+
+// An event for a session goes to the window that owns it. While its tab is moving
+// between windows the event waits, and is delivered once the new window has the tab.
+function sessionSend(id, channel, payload, s = sessions.get(id)) {
+  if (!s) return;
+  if (s.transit) s.transit.push([channel, payload]);
+  else sendTo(s.owner, channel, payload);
 }
 
 // Terminal output: to the renderer, and to the session's log file if one is open
 function emitData(id, data) {
-  send('session:data', { id, data });
   const s = sessions.get(id);
-  if (s && s.logger) s.logger.write(data);
+  if (!s) return;
+  sessionSend(id, 'session:data', { id, data }, s);
+  if (s.logger) s.logger.write(data);
 }
 
-// Forget a session and release what hangs off it. Returns false if already gone.
+// Forget a session and release what hangs off it. Returns the session, or null if already gone.
 function dropSession(id) {
   const s = sessions.get(id);
-  if (!s) return false;
+  if (!s) return null;
   sessions.delete(id);
   if (s.logger) { try { s.logger.close(); } catch {} }
   if (s.stopForwards) { try { s.stopForwards(); } catch {} }
-  return true;
+  return s;
+}
+
+// The session ended on its own: tell its window
+function sessionEnded(id, message) {
+  const s = dropSession(id);
+  if (s) sessionSend(id, 'session:status', { id, status: 'closed', message }, s);
 }
 
 // Connection-attempt log line, routed to the popup by connectId
 function clog(connectId, level, message) {
-  if (connectId) send('session:log', { connectId, level, message });
+  if (connectId) sendTo(connectOwners.get(connectId), 'session:log', { connectId, level, message });
 }
 
 /* ---------------- Host storage (userData/hosts.json) ---------------- */
@@ -153,8 +187,14 @@ ipcMain.handle('hosts:save', (e, hosts) => {
   const tmp = file + '.tmp';
   fs.writeFileSync(tmp, JSON.stringify(hosts.map(protectSecrets), null, 2), 'utf8');
   fs.renameSync(tmp, file);
+  notifyOthers(e.sender, 'hosts:changed');
   return true;
 });
+
+// Saved data changed in one window: the others reload it
+function notifyOthers(sender, channel) {
+  for (const w of BrowserWindow.getAllWindows()) if (w.webContents !== sender) sendTo(w.webContents, channel);
+}
 
 /* ---------------- Serial ---------------- */
 
@@ -215,16 +255,14 @@ function createSerialSession(id, cfg) {
       clog(cid, 'info', 'Port opened');
       sessions.set(id, {
         type: 'serial',
+        owner: cfg.owner,
         write: data => port.write(data),
         resize: () => {},
         close: () => { try { if (port.isOpen) port.close(); } catch {} }
       });
       port.on('data', data => emitData(id, data));
-      port.on('close', () => {
-        dropSession(id);
-        send('session:status', { id, status: 'closed' });
-      });
-      port.on('error', e2 => send('session:status', { id, status: 'error', message: e2.message }));
+      port.on('close', () => sessionEnded(id));
+      port.on('error', e2 => sessionSend(id, 'session:status', { id, status: 'error', message: e2.message }));
       finish();
     });
   });
@@ -285,6 +323,7 @@ function createSshSession(id, cfg) {
           clog(cid, 'info', 'Shell ready');
           const session = {
             type: 'ssh',
+            owner: cfg.owner,
             conn,
             write: data => stream.write(data),
             resize: (cols, rows) => { try { stream.setWindow(rows, cols, 0, 0); } catch {} },
@@ -294,14 +333,13 @@ function createSshSession(id, cfg) {
           stream.on('data', data => emitData(id, data));
           stream.stderr.on('data', data => emitData(id, data));
           stream.on('close', () => {
-            const was = dropSession(id);
+            sessionEnded(id);
             try { conn.end(); } catch {}
-            if (was) send('session:status', { id, status: 'closed' });
           });
           if (Array.isArray(cfg.forwards) && cfg.forwards.length) {
             const notify = (level, message) => {
               clog(cid, level, message);
-              send('session:status', { id, status: 'notice', level, message });
+              sessionSend(id, 'session:status', { id, status: 'notice', level, message });
             };
             // A second session to the same host (a split, a duplicate tab) can't bind the
             // same ports again; the first session's forwards keep serving them.
@@ -334,13 +372,11 @@ function createSshSession(id, cfg) {
         clog(cid, 'error', `Connection error: ${err.message}${err.level ? ` (${err.level})` : ''}`);
         finish(err);
       } else {
-        send('session:status', { id, status: 'error', message: err.message });
+        sessionSend(id, 'session:status', { id, status: 'error', message: err.message });
       }
     });
 
-    conn.on('close', () => {
-      if (dropSession(id)) send('session:status', { id, status: 'closed' });
-    });
+    conn.on('close', () => sessionEnded(id));
 
     // Servers that use keyboard-interactive auth (common on network gear)
     conn.on('keyboard-interactive', (name, instructions, lang, prompts, answer) => {
@@ -403,15 +439,13 @@ function createLocalSession(id, cfg) {
     }
     sessions.set(id, {
       type: 'local',
+      owner: cfg.owner,
       write: data => proc.write(data),
       resize: (cols, rows) => { try { if (cols > 0 && rows > 0) proc.resize(cols, rows); } catch {} },
       close: () => { try { proc.kill(); } catch {} }
     });
     proc.onData(data => emitData(id, Buffer.from(data, 'utf8')));
-    proc.onExit(({ exitCode }) => {
-      dropSession(id);
-      send('session:status', { id, status: 'closed', message: `exit code ${exitCode}` });
-    });
+    proc.onExit(({ exitCode }) => sessionEnded(id, `exit code ${exitCode}`));
     resolve();
   });
 }
@@ -420,6 +454,8 @@ function createLocalSession(id, cfg) {
 
 ipcMain.handle('session:create', async (e, cfg) => {
   const id = 's' + nextSessionId++;
+  cfg.owner = e.sender;
+  if (cfg.connectId) connectOwners.set(cfg.connectId, e.sender);
   try {
     if (cfg.type === 'serial') await createSerialSession(id, cfg);
     else if (cfg.type === 'ssh') await createSshSession(id, cfg);
@@ -428,6 +464,8 @@ ipcMain.handle('session:create', async (e, cfg) => {
     return { ok: true, id };
   } catch (err) {
     return { ok: false, error: err.message };
+  } finally {
+    connectOwners.delete(cfg.connectId);
   }
 });
 
@@ -463,7 +501,7 @@ ipcMain.handle('log:start', async (e, { id, file, append, timestamps, title }) =
     const p = n => String(n).padStart(2, '0');
     const when = `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
     const base = String(title || 'session').replace(/[<>:"/\\|?*\s]+/g, '_').slice(0, 60) || 'session';
-    const res = await dialog.showSaveDialog(win, {
+    const res = await dialog.showSaveDialog(windowOf(e), {
       title: 'Save session log',
       defaultPath: path.join(app.getPath('documents'), `${base}-${when}.log`),
       filters: [{ name: 'Log files', extensions: ['log', 'txt'] }]
@@ -493,7 +531,11 @@ ipcMain.handle('log:stop', (e, id) => {
 
 /* ---------------- SFTP ---------------- */
 
-registerSftp({ ipcMain, dialog, app, sessions, send, getWindow: () => win });
+registerSftp({
+  ipcMain, dialog, app, sessions,
+  send: (e, channel, payload) => sendTo(e.sender, channel, payload),
+  getWindow: windowOf
+});
 
 /* ---------------- Network config (IP / MAC changer) ---------------- */
 
@@ -752,6 +794,7 @@ ipcMain.handle('snippets:save', (e, snippets) => {
   const tmp = file + '.tmp';
   fs.writeFileSync(tmp, JSON.stringify(snippets, null, 2), 'utf8');
   fs.renameSync(tmp, file);
+  notifyOthers(e.sender, 'snippets:changed');
   return true;
 });
 
@@ -759,7 +802,7 @@ ipcMain.handle('snippets:save', (e, snippets) => {
 
 ipcMain.handle('file:saveText', async (e, { title, defaultName, filters, content }) => {
   try {
-    const res = await dialog.showSaveDialog(win, {
+    const res = await dialog.showSaveDialog(windowOf(e), {
       title,
       defaultPath: path.join(app.getPath('documents'), String(defaultName || 'export').replace(/[<>:"/\\|?*]/g, '_')),
       filters
@@ -774,7 +817,7 @@ ipcMain.handle('file:saveText', async (e, { title, defaultName, filters, content
 
 ipcMain.handle('file:openText', async (e, { title, filters }) => {
   try {
-    const res = await dialog.showOpenDialog(win, { title, filters, properties: ['openFile'] });
+    const res = await dialog.showOpenDialog(windowOf(e), { title, filters, properties: ['openFile'] });
     if (res.canceled || !res.filePaths.length) return { ok: false, cancelled: true };
     const file = res.filePaths[0];
     if (fs.statSync(file).size > 5 * 1024 * 1024) return { ok: false, error: 'That file is too large to be a CooTerm export.' };
@@ -788,15 +831,128 @@ ipcMain.handle('file:openText', async (e, { title, filters }) => {
 
 ipcMain.on('shell:openExternal', (e, url) => openExternal(url));
 
-ipcMain.handle('dialog:openFile', async () => {
-  const res = await dialog.showOpenDialog(win, {
+ipcMain.handle('dialog:openFile', async e => {
+  const res = await dialog.showOpenDialog(windowOf(e), {
     title: 'Select private key',
     properties: ['openFile']
   });
   return res.canceled ? null : res.filePaths[0];
 });
 
-app.whenReady().then(createWindow);
+/* ---------------- Moving tabs between windows ----------------
+   A tab is dragged out of its window (or moved with "Move to new window"):
+   1. its sessions stop sending to the old window and queue their events instead;
+   2. the old window takes the tab down without closing anything, and hands over
+      its layout, settings and scrollback;
+   3. the new window rebuilds the tab and becomes the owner; the queued events follow. */
+
+let tabDrag = null; // { source, token, sessionIds, claimed }
+const releases = new Map(); // requestId -> resolve(payload | null)
+let nextReleaseId = 1;
+
+function requestRelease(source, token) {
+  return new Promise(resolve => {
+    const requestId = nextReleaseId++;
+    const timer = setTimeout(() => { releases.delete(requestId); resolve(null); }, 5000);
+    releases.set(requestId, payload => { clearTimeout(timer); resolve(payload); });
+    sendTo(source, 'tab:release', { requestId, token });
+  });
+}
+
+ipcMain.on('tab:released', (e, { requestId, payload }) => {
+  const resolve = releases.get(requestId);
+  if (resolve) { releases.delete(requestId); resolve(payload || null); }
+});
+
+// makeTarget() returns a promise for the receiving webContents
+async function moveTab(source, { token, sessionIds }, makeTarget, index) {
+  const moving = (sessionIds || []).map(id => sessions.get(id)).filter(s => s && s.owner === source);
+  // No owner while in transit, so the old window closing (it may now be empty) can't take them down
+  for (const s of moving) { s.transit = []; s.owner = null; }
+  const flush = owner => {
+    for (const s of moving) {
+      const queued = s.transit || [];
+      s.transit = null;
+      s.owner = owner;
+      for (const [channel, payload] of queued) sendTo(owner, channel, payload);
+    }
+  };
+
+  const payload = await requestRelease(source, token);
+  if (!payload) { flush(source); return; } // the old window kept the tab
+  let target = null;
+  try { target = await makeTarget(); } catch {}
+  if (!target || target.isDestroyed()) {
+    // Nowhere to go: give the tab back rather than lose it
+    target = source.isDestroyed() ? null : source;
+    if (!target) { for (const s of moving) { s.transit = null; s.close(); } return; }
+  }
+  for (const s of moving) s.owner = target;
+  sendTo(target, 'tab:adopt', { payload, index });
+  flush(target);
+  const targetWin = BrowserWindow.fromWebContents(target);
+  if (targetWin) { if (targetWin.isMinimized()) targetWin.restore(); targetWin.focus(); }
+}
+
+function newWindowAt(sourceWin, point) {
+  const [width, height] = sourceWin && !sourceWin.isDestroyed() ? sourceWin.getSize() : [1280, 800];
+  const bounds = point
+    ? { x: Math.round(point.x - 120), y: Math.round(point.y - 18), width, height }
+    : { width, height };
+  return () => createWindow({ bounds }).then(w => w.webContents);
+}
+
+ipcMain.on('tab:dragStart', (e, { token, sessionIds }) => {
+  tabDrag = { source: e.sender, token, sessionIds, claimed: false };
+});
+
+// Another window's tab bar took the drop
+ipcMain.on('tab:dropHere', (e, { index }) => {
+  const drag = tabDrag;
+  if (!drag || drag.claimed || drag.source === e.sender) return;
+  drag.claimed = true;
+  const target = e.sender;
+  moveTab(drag.source, drag, () => Promise.resolve(target), index);
+});
+
+// The drag ended. Dropped outside every window: the tab gets a window of its own.
+ipcMain.on('tab:dragEnd', e => {
+  const drag = tabDrag;
+  if (!drag || drag.source !== e.sender) return;
+  const point = screen.getCursorScreenPoint();
+  const sourceWin = windowOf(e);
+  // The drop in another window can arrive just after this; give it a moment to claim the tab
+  setTimeout(() => {
+    if (tabDrag === drag) tabDrag = null;
+    if (drag.claimed || !sourceWin || sourceWin.isDestroyed()) return;
+    const b = sourceWin.getBounds();
+    const inside = point.x >= b.x && point.x < b.x + b.width && point.y >= b.y && point.y < b.y + b.height;
+    const overOther = BrowserWindow.getAllWindows().some(w => {
+      if (w === sourceWin || w.isMinimized() || !w.isVisible()) return false;
+      const o = w.getBounds();
+      return point.x >= o.x && point.x < o.x + o.width && point.y >= o.y && point.y < o.y + o.height;
+    });
+    if (inside || overOther) return;
+    drag.claimed = true;
+    moveTab(drag.source, drag, newWindowAt(sourceWin, point));
+  }, 250);
+});
+
+ipcMain.on('tab:toNewWindow', (e, { token, sessionIds }) => {
+  const sourceWin = windowOf(e);
+  const b = sourceWin ? sourceWin.getBounds() : null;
+  moveTab(e.sender, { token, sessionIds }, newWindowAt(sourceWin, b ? { x: b.x + 150, y: b.y + 50 } : null));
+});
+
+ipcMain.on('window:new', e => { createWindow({ bounds: newWindowBounds(windowOf(e)) }); });
+
+function newWindowBounds(sourceWin) {
+  if (!sourceWin || sourceWin.isDestroyed()) return {};
+  const b = sourceWin.getBounds();
+  return { x: b.x + 30, y: b.y + 30, width: b.width, height: b.height };
+}
+
+app.whenReady().then(() => createWindow());
 
 app.on('window-all-closed', () => {
   for (const [id, s] of [...sessions]) {

@@ -20,6 +20,18 @@ contextBridge.exposeInMainWorld('api', {
 
   openExternal: url => ipcRenderer.send('shell:openExternal', url),
 
+  onHostsChanged: cb => ipcRenderer.on('hosts:changed', () => cb()),
+  onSnippetsChanged: cb => ipcRenderer.on('snippets:changed', () => cb()),
+
+  newWindow: () => ipcRenderer.send('window:new'),
+  tabDragStart: info => ipcRenderer.send('tab:dragStart', info),
+  tabDragEnd: () => ipcRenderer.send('tab:dragEnd'),
+  tabDropHere: index => ipcRenderer.send('tab:dropHere', { index }),
+  tabToNewWindow: info => ipcRenderer.send('tab:toNewWindow', info),
+  onTabRelease: cb => ipcRenderer.on('tab:release', (e, msg) => cb(msg)),
+  tabReleased: (requestId, payload) => ipcRenderer.send('tab:released', { requestId, payload }),
+  onTabAdopt: cb => ipcRenderer.on('tab:adopt', (e, msg) => cb(msg)),
+
   logStart: opts => ipcRenderer.invoke('log:start', opts),
   logStop: id => ipcRenderer.invoke('log:stop', id),
 
