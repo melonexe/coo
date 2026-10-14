@@ -7,7 +7,7 @@ const CSV_COLUMNS = [
   'kind', 'name',
   'host', 'port', 'username', 'auth', 'key_path', 'forwards',
   'serial_port', 'baud_rate', 'data_bits', 'parity', 'stop_bits', 'flow_control', 'line_ending', 'local_echo',
-  'command', 'press_enter'
+  'command', 'press_enter', 'folder'
 ];
 
 /* ---------------- CSV ---------------- */
@@ -103,7 +103,7 @@ function hostToRow(h) {
   };
 }
 
-const snippetToRow = s => ({ kind: 'snippet', name: s.name, command: s.command, press_enter: s.run ? 'yes' : 'no' });
+const snippetToRow = s => ({ kind: 'snippet', name: s.name, command: s.command, press_enter: s.run ? 'yes' : 'no', folder: s.folder || '' });
 
 const pick = (value, allowed, fallback) => {
   const v = String(value || '').trim().toLowerCase();
@@ -146,7 +146,8 @@ function rowToItem(row) {
   if (kind === 'snippet') {
     const command = String(row.command || '').replace(/\r\n/g, '\n').replace(/\n+$/, '');
     if (!command.trim()) return { error: 'a snippet row has no command' };
-    return { snippet: { name: name || command.split('\n')[0].slice(0, 40), command, run: yes(row.press_enter) } };
+    const folder = cleanFolder(row.folder);
+    return { snippet: { name: name || command.split('\n')[0].slice(0, 40), command, run: yes(row.press_enter), ...(folder ? { folder } : {}) } };
   }
   return { error: kind ? `unknown kind "${kind}"` : 'a row has no kind (ssh, serial or snippet)' };
 }
@@ -156,7 +157,7 @@ function rowToItem(row) {
 function toCoosnip(snippets) {
   return JSON.stringify({
     coosnip: 1,
-    snippets: snippets.map(s => ({ name: s.name, command: s.command, run: !!s.run }))
+    snippets: snippets.map(s => ({ name: s.name, command: s.command, run: !!s.run, ...(s.folder ? { folder: s.folder } : {}) }))
   }, null, 2) + '\n';
 }
 
@@ -164,7 +165,7 @@ function parseCoosnip(text) {
   const data = JSON.parse(text.replace(/^﻿/, ''));
   const list = Array.isArray(data) ? data : data && Array.isArray(data.snippets) ? data.snippets : null;
   if (!list) throw new Error('this is not a .coosnip file');
-  return list.map(s => rowToItem({ kind: 'snippet', name: s && s.name, command: s && s.command, press_enter: s && s.run ? 'yes' : 'no' }));
+  return list.map(s => rowToItem({ kind: 'snippet', name: s && s.name, command: s && s.command, press_enter: s && s.run ? 'yes' : 'no', folder: s && s.folder }));
 }
 
 /* ---------------- Import ---------------- */

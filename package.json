@@ -1,7 +1,7 @@
 {
   "name": "cooterm",
   "productName": "CooTerm",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Termius-style SSH + Serial terminal for Windows",
   "main": "src/main/main.js",
   "author": "Alexander Simon",

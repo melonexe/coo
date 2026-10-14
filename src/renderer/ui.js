@@ -139,6 +139,60 @@ function dialog({ title, message, label, value, placeholder, okLabel = 'OK', dan
 }
 
 const askText = opts => dialog({ ...opts, input: true });
+
+// Several text fields at once: fields [{ label, value, placeholder }] → array of values, or null.
+// Enter moves to the next field, and accepts on the last one. Empty values are allowed.
+function askFields({ title, message, fields, okLabel = 'OK' }) {
+  return new Promise(resolve => {
+    const backdrop = el('div', 'backdrop ask-backdrop');
+    const box = el('div', 'dialog ask-dialog');
+    box.appendChild(el('div', 'modal-title', title));
+    if (message) box.appendChild(el('div', 'ask-message', message));
+
+    const inputs = fields.map(f => {
+      const row = el('div', 'form-row');
+      const label = el('label', '', f.label);
+      const input = el('input');
+      input.type = 'text';
+      input.value = f.value || '';
+      input.placeholder = f.placeholder || '';
+      input.spellcheck = false;
+      row.append(label, input);
+      box.appendChild(row);
+      return input;
+    });
+
+    const actions = el('div', 'modal-actions');
+    const cancel = el('button', 'btn', 'Cancel');
+    const ok = el('button', 'btn btn-primary', okLabel);
+    cancel.type = ok.type = 'button';
+    actions.append(cancel, ok);
+    box.appendChild(actions);
+    backdrop.appendChild(box);
+    document.body.appendChild(backdrop);
+
+    const finish = result => {
+      backdrop.remove();
+      openDialogClose = null;
+      resolve(result);
+    };
+    const accept = () => finish(inputs.map(i => i.value));
+    openDialogClose = () => finish(null);
+
+    cancel.addEventListener('click', openDialogClose);
+    ok.addEventListener('click', accept);
+    backdrop.addEventListener('mousedown', ev => { if (ev.target === backdrop) openDialogClose(); });
+    box.addEventListener('keydown', ev => {
+      if (ev.key !== 'Enter') return;
+      ev.preventDefault();
+      const i = inputs.indexOf(ev.target);
+      if (i >= 0 && i < inputs.length - 1) { inputs[i + 1].focus(); inputs[i + 1].select(); }
+      else accept();
+    });
+
+    if (inputs.length) { inputs[0].focus(); inputs[0].select(); } else ok.focus();
+  });
+}
 const askConfirm = opts => dialog({ okLabel: 'Delete', danger: true, ...opts, input: false });
 
 /* ---------------- Formatting ---------------- */

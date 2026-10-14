@@ -27,6 +27,8 @@ A Termius-style SSH + **Serial** terminal for Windows, built with Electron. Seri
 - **Port forwarding** — local, remote and dynamic (SOCKS5) rules saved per SSH host
 - **Snippets** — saved commands sent to the focused terminal with one click; share one (or all) as a `.coosnip` file
   - A line `sleep 5` in a snippet waits 5 seconds before the next lines are sent (`sleep 500ms` for milliseconds); it is not sent itself. Click a running snippet to stop it. To send a real `sleep` command, write it another way, e.g. `\sleep 5` or `sleep 5;`
+  - Folders (optional): pick or type a folder in the snippet editor, drag snippets onto a folder (or onto the empty part of the list to take them out), or right-click a snippet → Move to folder. Folders open and close with a click, can be renamed, removed (keeping their snippets) or shared as one `.coosnip`. Folders travel with CSV and `.coosnip` exports
+  - Variables: `{{name}}` asks for a value each time the snippet runs, and `{{name=default}}` fills in a default. A name used more than once is asked for once, and the dialog remembers the last values you typed (until CooTerm closes). Example: `show interface {{interface=Gi0/1}}`
 - **Import / export** — connections (SSH and serial) and snippets as one CSV file, to hand your setup to someone else. Passwords and passphrases are never exported
 - **Session logging** — record a session to a plain-text file (escape codes stripped, optional per-line timestamps); the log carries on across reconnects
 - **Terminal settings** — themes, font, size, cursor, scrollback

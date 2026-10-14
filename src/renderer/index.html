@@ -149,11 +149,12 @@
           <div id="side-snippets" class="side-body hidden">
             <div class="snip-bar">
               <input id="snip-search" type="text" placeholder="Filter snippets…" spellcheck="false" autocomplete="off" />
+              <button type="button" id="snip-new-folder" class="icon-btn" data-icon="newFolder" title="New folder"></button>
               <button type="button" id="snip-more" class="icon-btn" data-icon="more" title="Import / export snippets"></button>
               <button type="button" id="snip-new" class="btn btn-primary">+ New</button>
             </div>
             <div id="snip-list" class="snip-list"></div>
-            <div class="side-note">Click a snippet to send it to the focused terminal. Drop a .coosnip or CSV file here to import it.</div>
+            <div class="side-note">Click a snippet to send it to the focused terminal. Right-click for more, or drag it onto a folder. Drop a .coosnip or CSV file here to import it.</div>
           </div>
         </aside>
       </div>
@@ -485,9 +486,16 @@
         <input id="snip-name" type="text" placeholder="Show interfaces" />
       </div>
       <div class="form-row">
+        <label for="snip-folder">Folder (optional)</label>
+        <input id="snip-folder" type="text" list="snip-folder-list" placeholder="No folder — type a name to make one" spellcheck="false" autocomplete="off" />
+        <datalist id="snip-folder-list"></datalist>
+      </div>
+      <div class="form-row">
         <label for="snip-cmd">Command (one per line)</label>
-        <textarea id="snip-cmd" rows="6" spellcheck="false" placeholder="enable&#10;sleep 2&#10;show ip interface brief"></textarea>
+        <textarea id="snip-cmd" rows="6" spellcheck="false" placeholder="enable&#10;sleep 2&#10;show interface {{interface=Gi0/1}}"></textarea>
         <div class="field-hint">A line <code>sleep 5</code> waits 5 seconds before sending the next lines (<code>sleep 500ms</code> for milliseconds). It isn't sent to the terminal.</div>
+        <div class="field-hint"><code>{{name}}</code> asks for a value when the snippet runs; <code>{{name=default}}</code> fills in a default. Use the same name again to reuse the value.</div>
+        <div id="snip-vars" class="field-hint snip-vars hidden"></div>
       </div>
       <div class="form-row">
         <label class="check"><input id="snip-run" type="checkbox" /> Press Enter after sending (run it straight away)</label>

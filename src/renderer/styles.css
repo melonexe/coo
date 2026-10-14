@@ -1177,3 +1177,30 @@ body.tab-drop-target::after {
 .snip-wait { margin-left: 8px; font-size: 10.5px; color: var(--accent-hover); }
 .field-hint { margin-top: 5px; font-size: 11.5px; color: var(--text-dim); line-height: 1.4; }
 .field-hint code { font-family: "Cascadia Mono", Consolas, monospace; color: var(--text); }
+.snip-badge.var { color: var(--accent-hover); font-family: "Cascadia Mono", Consolas, monospace; }
+.snip-vars { color: var(--accent-hover); }
+
+/* Snippet folders */
+.snip-folder { margin-top: 2px; }
+.snip-folder-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  color: var(--text-dim);
+  font-size: 12.5px;
+}
+.snip-folder-head:hover { background: var(--bg-hover); color: var(--text); }
+.snip-chevron { display: inline-block; width: 10px; font-size: 10px; transition: transform 0.12s; }
+.snip-folder.open .snip-chevron { transform: rotate(90deg); }
+.snip-folder-icon { display: flex; color: var(--accent-hover); }
+.snip-folder-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; color: var(--text); }
+.snip-folder-count { font-size: 11px; padding: 0 6px; border-radius: 8px; background: var(--bg-active); }
+.snip-folder-add, .snip-folder-more { display: none; }
+.snip-folder-head:hover .snip-folder-add, .snip-folder-head:hover .snip-folder-more { display: flex; }
+.snip-folder-body { margin-left: 12px; padding-left: 4px; border-left: 1px solid var(--border); }
+.snip-folder-empty { padding: 6px 8px; font-size: 11.5px; color: var(--text-dim); font-style: italic; }
+.snip-item.dragging { opacity: 0.45; }
+.snip-drop { background: var(--bg-active) !important; box-shadow: inset 0 0 0 1px var(--accent); border-radius: 6px; }
